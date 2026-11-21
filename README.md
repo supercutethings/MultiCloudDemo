@@ -313,6 +313,9 @@ trade is the point of the comparison, not an accident — [breakdown](docs/cost.
 
 Full component-level breakdown and cheaper variants: [docs/cost.md](docs/cost.md).
 
+What breaks first under load, and what I would change in what order:
+[docs/at-10x.md](docs/at-10x.md).
+
 ## Releases
 
 Versions track repository milestones rather than calendar time: each one is a working,
@@ -413,8 +416,9 @@ deployable state of the platform, and the changelog records what changed and why
 
 ### Unreleased
 
-* Phase 5 — the packaging work: recorded demo, per-cloud cost screenshots, and the
-  "what I would change at 10× traffic" write-up.
+* Phase 5 — packaging: the [10× traffic analysis](docs/at-10x.md) is written; the recorded
+  demo and the per-cloud cost screenshots need a live deployment and a screen, so they are
+  open rather than done.
 * GCP CI authentication and state — done, unreleased: `infra/bootstrap/gcp` creates the
   Workload Identity Federation pool, its GitHub provider, the CI service account and the
   GCS state bucket, and `terraform-plan` / `terraform-apply` have a `gcp/cloudrun` job behind
@@ -435,8 +439,8 @@ deployable state of the platform, and the changelog records what changed and why
 * **Phase 4 — Hardening (done):** contract tests against mocked providers, daily drift
   detection, a manual ephemeral apply that must destroy itself, a k6 load scenario, and the
   JWT rotation runbook.
-* **Phase 5 — Packaging:** recorded demo, per-cloud cost screenshots, "what I would change at
-  10× traffic" write-up.
+* **Phase 5 — Packaging (partly done):** [what I would change at 10× traffic](docs/at-10x.md)
+  is written; the recorded demo and per-cloud cost screenshots need a live deployment.
 
 ## Contributing
 
@@ -502,7 +506,8 @@ Terraform changes additionally need Terraform ≥ 1.6 (`terraform fmt -check -re
 Every pull request runs the app pipeline (ruff, pytest, image build and Trivy scan),
 manifest validation (`kustomize` render, `kubeconform -strict`, `conftest`) and
 `terraform fmt`/`validate`. A plan is posted as a comment when cloud credentials are
-available — an AWS role or an Azure federated credential ([docs/ci.md](docs/ci.md)). Merges require a green run; nothing is merged on a red badge.
+available — an AWS role, an Azure federated credential or a GCP workload identity provider
+([docs/ci.md](docs/ci.md)). Merges require a green run; nothing is merged on a red badge.
 
 ### Community
 
