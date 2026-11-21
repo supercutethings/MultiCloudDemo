@@ -424,8 +424,10 @@ deployable state of the platform, and the changelog records what changed and why
   GCS state bucket, and `terraform-plan` / `terraform-apply` have a `gcp/cloudrun` job behind
   `vars.GCP_WORKLOAD_IDENTITY_PROVIDER`. The last two 🚧 rows in
   [docs/cloud-matrix.md](docs/cloud-matrix.md) are now ✅.
-* GCP drift detection: the federation pool exists now, so `terraform-drift` can grow the
-  third job it could not have before.
+* GCP drift detection — done, unreleased: `terraform-drift` has the third job it could not
+  have before. While adding it, the existing two were fixed: they planned with the default
+  `image_tag` while apply deployed the commit SHA, which would have opened a drift issue
+  every day.
 
 ## Roadmap
 

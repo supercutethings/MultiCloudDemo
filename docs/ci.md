@@ -173,8 +173,13 @@ is exactly the class of mistake that otherwise surfaces twenty minutes into a de
 | 1 | the plan failed | fails the job — an error is not drift |
 
 One issue per environment, updated in place and closed automatically once the plan is empty
-again. The workflow covers AWS and Azure; GCP gained plan and apply jobs first, and its drift
-job is the next one to add now that the federation pool exists.
+again. All three clouds are covered.
+
+One detail worth copying if you build this yourself: each job reads the deployed
+`image_tag` back from state (`terraform output -raw image_tag`) and plans with that, not with
+the variable default. Apply passes the commit SHA, so a job planning with the default would
+report drift every single day — a false positive that trains people to ignore the issue,
+which is worse than no drift detection at all.
 
 ## Ephemeral environment
 

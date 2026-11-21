@@ -42,6 +42,11 @@ output "database_endpoint" {
   value       = module.rds.endpoint
 }
 
+output "image_tag" {
+  description = "Image tag currently deployed. Drift plans use this, not the variable default."
+  value       = var.image_tag
+}
+
 output "task_role_arns" {
   description = "Per-service workload identities (least privilege, one role each)."
   value = {

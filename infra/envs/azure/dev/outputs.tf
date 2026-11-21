@@ -11,6 +11,11 @@ output "internal_urls" {
   }
 }
 
+output "image_tag" {
+  description = "Image tag currently deployed. Drift plans use this, not the variable default."
+  value       = var.image_tag
+}
+
 output "environment_default_domain" {
   value = module.apps.environment_default_domain
 }

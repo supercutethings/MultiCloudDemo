@@ -8,8 +8,8 @@ name: terraform-drift
 # 2 means drift, anything else is a real failure and fails the job instead of being reported
 # as drift.
 #
-# GCP is absent on purpose: there is no Workload Identity Federation pool yet, so a GCP job
-# here would only ever be skipped. It goes in when the pool does.
+# All three clouds are covered. GCP waited until infra/bootstrap/gcp existed: a job that can
+# only ever be skipped is noise, not coverage.
 
 on:
   schedule:
@@ -61,9 +61,14 @@ jobs:
       - name: Plan
         id: plan
         run: |
+          # Plan against the tag that is actually deployed, read back from state. Apply
+          # passes the commit SHA, so planning with the variable default (1.0.0) would
+          # report drift on every run -- a false positive that teaches people to ignore
+          # the issue.
+          image_tag=$(terraform output -raw image_tag 2>/dev/null || echo "${GITHUB_SHA}")
           set +e
           terraform plan -detailed-exitcode -lock=false -input=false -no-color \
-            -out=tfplan > plan.txt 2>&1
+            -var="image_tag=${image_tag}" -out=tfplan > plan.txt 2>&1
           code=$?
           set -e
           cat plan.txt
@@ -190,9 +195,14 @@ jobs:
       - name: Plan
         id: plan
         run: |
+          # Plan against the tag that is actually deployed, read back from state. Apply
+          # passes the commit SHA, so planning with the variable default (1.0.0) would
+          # report drift on every run -- a false positive that teaches people to ignore
+          # the issue.
+          image_tag=$(terraform output -raw image_tag 2>/dev/null || echo "${GITHUB_SHA}")
           set +e
           terraform plan -detailed-exitcode -lock=false -input=false -no-color \
-            -out=tfplan > plan.txt 2>&1
+            -var="image_tag=${image_tag}" -out=tfplan > plan.txt 2>&1
           code=$?
           set -e
           cat plan.txt
@@ -264,6 +274,139 @@ jobs:
         uses: actions/github-script@v7
         env:
           CLOUD: azure/dev
+        with:
+          script: |
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            for (const issue of open.data.filter((i) => i.title === title)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `\`terraform plan\` is empty again as of ${new Date().toISOString()}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+  # Third authentication shape, same four steps. The only differences from the other two are
+  # the login action and the explicit `-var project=`: the GCP environment root has no
+  # project default on purpose, so a plan cannot silently target another project.
+  drift-gcp:
+    name: drift (gcp/cloudrun)
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/gcp/cloudrun
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.GCP_TF_STATE_BUCKET }}"
+
+      - name: Plan
+        id: plan
+        run: |
+          # Same rule as the other two jobs: plan against the tag that is deployed, read
+          # back from state, not against the variable default.
+          image_tag=$(terraform output -raw image_tag 2>/dev/null || echo "${GITHUB_SHA}")
+          set +e
+          terraform plan -detailed-exitcode -lock=false -input=false -no-color \
+            -var="project=${{ vars.GCP_PROJECT_ID }}" \
+            -var="image_tag=${image_tag}" \
+            -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 1 ]; then
+            echo "::error::terraform plan failed; this is not drift"
+            exit 1
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            terraform show -no-color tfplan > drift.txt
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the drift issue
+        if: steps.plan.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: gcp/cloudrun
+          PLAN_FILE: infra/envs/gcp/cloudrun/drift.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8').slice(0, 60000);
+            const body = [
+              `\`terraform plan\` on \`${process.env.CLOUD}\` is not empty at ${new Date().toISOString()}.`,
+              '',
+              'Either someone changed infrastructure by hand, or the state and the code disagree.',
+              'Decide which, then either codify the change or apply to revert it. This issue is',
+              'updated in place on every run, so it closes itself once the plan is empty again.',
+              '',
+              '<details><summary>Plan</summary>',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            const existing = open.data.find((i) => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['drift'],
+              });
+            }
+
+      - name: Close the drift issue when the plan is empty
+        if: steps.plan.outputs.drift == 'false'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: gcp/cloudrun
         with:
           script: |
             const title = `Drift detected: ${process.env.CLOUD}`;

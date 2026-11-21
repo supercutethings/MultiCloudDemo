@@ -16,6 +16,11 @@ output "image_repository_prefix" {
   value       = module.registry.prefix
 }
 
+output "image_tag" {
+  description = "Image tag currently deployed. Drift plans use this, not the variable default."
+  value       = var.image_tag
+}
+
 output "connector_id" {
   description = "Serverless VPC Access connector used by every service."
   value       = module.network.connector_id
