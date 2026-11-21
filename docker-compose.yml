@@ -1,0 +1,106 @@
+name: showcase
+
+# Local mirror of the cloud topology: gateway is public, auth and catalog are
+# internal-only. Ports 8001/8002 are published on the host purely for debugging.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  auth:
+    build:
+      context: .
+      dockerfile: apps/auth/Dockerfile
+    environment:
+      ENVIRONMENT: local
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+psycopg://app:app@db:5432/app
+      JWT_PRIVATE_KEY_PATH: /keys/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /keys/jwt-public.pem
+      JWT_ISSUER: showcase-auth
+      JWT_AUDIENCE: showcase-api
+      ACCESS_TOKEN_TTL_SECONDS: "900"
+      # Mutual TLS on 8443; the ops port (8000) serves healthz/readyz only.
+      PORT: "8443"
+      OPS_PORT: "8000"
+      TLS_CERT_FILE: /certs/auth/tls.crt
+      TLS_KEY_FILE: /certs/auth/tls.key
+      # Trust domain for *callers*: the gateway's issuing CA only.
+      TLS_CLIENT_CA_FILE: /certs/client-ca.crt
+    volumes:
+      - ./.keys:/keys:ro
+      - ./.certs:/certs:ro
+    ports:
+      - "8001:8443"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  catalog:
+    build:
+      context: .
+      dockerfile: apps/catalog/Dockerfile
+    environment:
+      ENVIRONMENT: local
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+psycopg://app:app@db:5432/app
+      JWT_PUBLIC_KEY_PATH: /keys/jwt-public.pem
+      JWT_ISSUER: showcase-auth
+      JWT_AUDIENCE: showcase-api
+      PORT: "8443"
+      OPS_PORT: "8000"
+      TLS_CERT_FILE: /certs/catalog/tls.crt
+      TLS_KEY_FILE: /certs/catalog/tls.key
+      TLS_CLIENT_CA_FILE: /certs/client-ca.crt
+    volumes:
+      - ./.keys:/keys:ro
+      - ./.certs:/certs:ro
+    ports:
+      - "8002:8443"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+    environment:
+      ENVIRONMENT: local
+      LOG_LEVEL: INFO
+      JWT_PUBLIC_KEY_PATH: /keys/jwt-public.pem
+      JWT_ISSUER: showcase-auth
+      JWT_AUDIENCE: showcase-api
+      # Internal hops are mutual TLS: the gateway verifies the service certificate and
+      # presents its own client certificate. The public hop stays HTTP behind the edge.
+      AUTH_SERVICE_URL: https://auth:8443
+      CATALOG_SERVICE_URL: https://catalog:8443
+      # Trust domain for *servers*: the CA that signs auth and catalog, not the one that
+      # signed the gateway's own certificate.
+      TLS_CA_FILE: /certs/server-ca.crt
+      TLS_CLIENT_CERT_FILE: /certs/gateway/tls.crt
+      TLS_CLIENT_KEY_FILE: /certs/gateway/tls.key
+      GIT_SHA: local
+    volumes:
+      - ./.keys:/keys:ro
+      - ./.certs:/certs:ro
+    ports:
+      - "8080:8000"
+    depends_on:
+      - auth
+      - catalog
+
+volumes:
+  pgdata:
