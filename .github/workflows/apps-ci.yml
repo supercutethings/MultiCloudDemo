@@ -55,10 +55,17 @@ jobs:
       - name: Build image
         run: docker build -f apps/${{ matrix.service }}/Dockerfile -t showcase/${{ matrix.service }}:${{ github.sha }} .
 
+      # The Trivy action pins an internal helper action that no longer resolves, so the
+      # scanner is installed as a plain binary and invoked directly. Same result, one
+      # fewer moving part between the job and the scanner.
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Scan image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          image-ref: showcase/${{ matrix.service }}:${{ github.sha }}
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed \
+            "showcase/${{ matrix.service }}:${{ github.sha }}"
