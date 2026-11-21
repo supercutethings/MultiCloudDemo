@@ -1,0 +1,89 @@
+name: k8s-validate
+
+# No cloud credentials, no cluster: rendering plus schema and policy checks catches the
+# mistakes that actually happen (typo'd keys, missing limits, :latest tags) in under a
+# minute, on every pull request.
+
+on:
+  pull_request:
+    paths:
+      - "k8s/**"
+      - "platform/policies/**"
+      - "scripts/k8s-render.sh"
+      - ".github/workflows/k8s-validate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - "platform/policies/**"
+
+permissions:
+  contents: read
+
+env:
+  # Dummy-but-valid values: the point is to prove the renderer and the manifests work,
+  # not to deploy anything.
+  AWS_REGION: eu-west-1
+  SECRETS_PREFIX: showcase/dev
+  CERTIFICATE_ARN: arn:aws:acm:eu-west-1:111122223333:certificate/00000000-0000-0000-0000-000000000000
+  VPC_CIDR: 10.20.0.0/16
+  APP_HOST: app.example.com
+  AZURE_KEYVAULT_URI: https://example.vault.azure.net
+  VNET_CIDR: 10.30.0.0/16
+  GCP_PROJECT: demo-project
+  GCP_REGION: europe-west1
+  GKE_CLUSTER: showcase-dev-gke
+  STATIC_IP: showcase-ip
+  IMAGE_REPO: registry.example.com/showcase
+
+jobs:
+  render-and-validate:
+    name: render + schema + policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform and conftest
+        run: |
+          set -euo pipefail
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" kubeconform
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" conftest
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Render every overlay
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for cloud in eks aks gke; do
+            echo "::group::render $cloud"
+            bash scripts/k8s-render.sh "$cloud" > "rendered/$cloud.yaml"
+            echo "objects: $(grep -c '^kind:' "rendered/$cloud.yaml")"
+            echo "::endgroup::"
+          done
+
+      - name: Schema validation (strict)
+        run: |
+          set -euo pipefail
+          for cloud in eks aks gke; do
+            echo "::group::$cloud"
+            kubeconform -strict -ignore-missing-schemas -summary "rendered/$cloud.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Policy validation
+        run: |
+          set -euo pipefail
+          for cloud in eks aks gke; do
+            echo "::group::$cloud"
+            conftest test -p platform/policies "rendered/$cloud.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+          retention-days: 7
