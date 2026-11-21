@@ -415,8 +415,13 @@ deployable state of the platform, and the changelog records what changed and why
 
 * Phase 5 — the packaging work: recorded demo, per-cloud cost screenshots, and the
   "what I would change at 10× traffic" write-up.
-* GCP CI authentication (Workload Identity Federation) and GCS state in CI: the last two
-  🚧 rows in [docs/cloud-matrix.md](docs/cloud-matrix.md).
+* GCP CI authentication and state — done, unreleased: `infra/bootstrap/gcp` creates the
+  Workload Identity Federation pool, its GitHub provider, the CI service account and the
+  GCS state bucket, and `terraform-plan` / `terraform-apply` have a `gcp/cloudrun` job behind
+  `vars.GCP_WORKLOAD_IDENTITY_PROVIDER`. The last two 🚧 rows in
+  [docs/cloud-matrix.md](docs/cloud-matrix.md) are now ✅.
+* GCP drift detection: the federation pool exists now, so `terraform-drift` can grow the
+  third job it could not have before.
 
 ## Roadmap
 
