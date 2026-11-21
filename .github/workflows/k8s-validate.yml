@@ -5,6 +5,7 @@ name: k8s-validate
 # minute, on every pull request.
 
 on:
+  workflow_dispatch: # re-run the checks without touching a file
   pull_request:
     paths:
       - "k8s/**"
