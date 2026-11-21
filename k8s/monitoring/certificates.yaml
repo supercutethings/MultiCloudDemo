@@ -1,6 +1,6 @@
 # Certificate expiry and readiness alerts.
 #
-# Applied separately from the application overlays (`scripts/cluster-addons.sh --monitoring`)
+# Applied separately from the application overlays (`MONITORING=1 scripts/cluster-addons.sh <eks|aks|gke>`)
 # because the PrometheusRule and ServiceMonitor are only meaningful once cert-manager's
 # metrics are being scraped. Applying them into a cluster without the operator would fail
 # the whole `kubectl apply`, which is a bad trade for an optional observability add-on.
