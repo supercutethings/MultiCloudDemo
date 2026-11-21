@@ -54,5 +54,12 @@ hidden:
   balancer described in `docs/cloud-matrix.md` is an optional extra (~$18/month) that this
   repository does not deploy, because it buys no capability the contract needs.
 
-The parity tests in `tests/terraform/` (Phase 4) assert that a module exposes every output
-above, so the contract cannot rot without a red build.
+`tests/terraform/` asserts this table against mocked providers — internal URL, public URL,
+log destination, one identity per app — so the contract cannot rot without a red build:
+
+```bash
+cd tests/terraform && terraform init -backend=false && terraform test
+```
+
+It runs with no credentials and in a few seconds, which is why it is cheap enough to run on
+every pull request rather than once a quarter.

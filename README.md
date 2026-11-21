@@ -320,6 +320,7 @@ deployable state of the platform, and the changelog records what changed and why
 
 | Version | Milestone | Highlights |
 |---|---|---|
+| **v0.6.0** | Phase 4: hardening | Contract tests against mocked providers, daily drift detection that opens and closes its own issue, a manual ephemeral apply that must destroy itself, a k6 load scenario with thresholds, and the JWT rotation runbook |
 | **v0.5.0** | GCP serverless leg + Azure CI | Cloud Run behind a Serverless VPC connector, private Cloud SQL, Secret Manager per secret, one service account per service; Azure plan/apply in CI with OIDC federated credentials |
 | **v0.4.0** | Azure serverless leg | Container Apps injected into a VNet, one managed identity per app, Flexible Server with no public endpoint, Key Vault behind a private endpoint, ACR with the admin account disabled, scale to zero when idle |
 | **v0.3.0** | Internal PKI and mutual TLS | Two trust domains, app-level mTLS on 8443, cert-manager issuance and rotation, Reloader rollout, expiry alerts at 21/7 days, policy rules for `Certificate` hygiene |
@@ -327,6 +328,26 @@ deployable state of the platform, and the changelog records what changed and why
 | **v0.1.0** | AWS serverless leg | FastAPI services, local Compose stack, network/ECR/RDS/ECS/ALB modules, Cloud Map, OIDC CI, Conftest guardrails |
 
 ### Changelog
+
+**v0.6.0 — Phase 4: hardening**
+
+* Added `tests/terraform/`: `terraform test` with mocked AWS, Azure and GCP providers that
+  asserts the contract in `infra/contracts/README.md` — internal URL, public URL, log
+  destination, and one workload identity per app. No credentials, no account, seconds to run.
+* The contract test found a real bug on its first run: the Container Apps probes used
+  `transport = "Http"`, which `terraform validate` accepts and the provider rejects at apply
+  time (`HTTP`/`TCP`/`HTTPS`). Fixed in the module; the test is what would have caught it.
+* Added `terraform-drift`: a daily `plan -detailed-exitcode` per cloud that opens, refreshes
+  and closes one issue per environment, so a change made in the console is visible instead
+  of silent.
+* Added `terraform-ephemeral`: a manual apply → smoke → destroy run on a separate state key
+  with `environment=ephemeral`, ending in a `plan -detailed-exitcode` that fails if the
+  destroy left anything behind.
+* Added `scripts/loadtest.k6.js`: the k6 counterpart of `loadtest.py`, with thresholds that
+  fail a run (p95 login < 1.5 s, p95 catalog < 500 ms, error rate < 5%).
+* Added [docs/jwt-rotation.md](docs/jwt-rotation.md): what a rotation actually costs — a
+  forced re-login for up to `ACCESS_TOKEN_TTL_SECONDS`, because there is one key and no
+  `kid` — plus the per-cloud procedure, verification and rollback.
 
 **v0.5.0 — GCP serverless leg and Azure CI**
 
@@ -392,8 +413,10 @@ deployable state of the platform, and the changelog records what changed and why
 
 ### Unreleased
 
-* Phase 4 — `terraform test` for the contract, drift detection, k6 through the load
-  balancer, JWT key-rotation runbook.
+* Phase 5 — the packaging work: recorded demo, per-cloud cost screenshots, and the
+  "what I would change at 10× traffic" write-up.
+* GCP CI authentication (Workload Identity Federation) and GCS state in CI: the last two
+  🚧 rows in [docs/cloud-matrix.md](docs/cloud-matrix.md).
 
 ## Roadmap
 
@@ -404,8 +427,9 @@ deployable state of the platform, and the changelog records what changed and why
   VNet-injected, one managed identity per app, scale to zero when idle.
 * **Phase 3 — GCP serverless (done):** Cloud Run + Cloud SQL + Secret Manager behind a VPC
   connector, one service account per service, and Azure plan/apply in CI with OIDC.
-* **Phase 4 — Hardening:** `terraform test` for the contract, ephemeral-environment apply in CI,
-  drift detection, k6 load test through the LB, JWT key rotation runbook.
+* **Phase 4 — Hardening (done):** contract tests against mocked providers, daily drift
+  detection, a manual ephemeral apply that must destroy itself, a k6 load scenario, and the
+  JWT rotation runbook.
 * **Phase 5 — Packaging:** recorded demo, per-cloud cost screenshots, "what I would change at
   10× traffic" write-up.
 
@@ -423,7 +447,7 @@ is deliberately small enough that a first pull request does not require reading 
 | Tests | Cover the auth error paths, add a Compose-level smoke variant | `apps/tests/` |
 | Policies | New Conftest rule with a failing and a passing fixture | `platform/policies/` |
 | Kubernetes | Add a `kustomize` component for a second internal service | `k8s/components/` |
-| Phase 4 | `terraform test` coverage for the contract, or a new k6 scenario | `tests/`, `scripts/` |
+| Tests | Extend the contract tests to a network or database module | `tests/terraform/` |
 
 ### Development setup
 

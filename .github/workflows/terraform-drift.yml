@@ -1,0 +1,289 @@
+name: terraform-drift
+
+# A plan that nobody runs is not a control. This workflow plans every environment that has
+# credentials on a schedule and opens (or refreshes) one issue when the plan is not empty --
+# someone clicked in the console, a certificate expired, a resource was deleted by hand.
+#
+# `-detailed-exitcode` is what makes it a check rather than a log line: 0 means no changes,
+# 2 means drift, anything else is a real failure and fails the job instead of being reported
+# as drift.
+#
+# GCP is absent on purpose: there is no Workload Identity Federation pool yet, so a GCP job
+# here would only ever be skipped. It goes in when the pool does.
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily, off the hour so it does not race the other schedules
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: tf-drift
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  drift-aws:
+    name: drift (aws/dev)
+    if: vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/aws/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-drift
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -lock=false -input=false -no-color \
+            -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 1 ]; then
+            echo "::error::terraform plan failed; this is not drift"
+            exit 1
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            terraform show -no-color tfplan > drift.txt
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the drift issue
+        if: steps.plan.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: aws/dev
+          PLAN_FILE: infra/envs/aws/dev/drift.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8').slice(0, 60000);
+            const body = [
+              `\`terraform plan\` on \`${process.env.CLOUD}\` is not empty at ${new Date().toISOString()}.`,
+              '',
+              'Either someone changed infrastructure by hand, or the state and the code disagree.',
+              'Decide which, then either codify the change or apply to revert it. This issue is',
+              'updated in place on every run, so it closes itself once the plan is empty again.',
+              '',
+              '<details><summary>Plan</summary>',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            const existing = open.data.find((i) => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['drift'],
+              });
+            }
+
+      - name: Close the drift issue when the plan is empty
+        if: steps.plan.outputs.drift == 'false'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: aws/dev
+        with:
+          script: |
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            for (const issue of open.data.filter((i) => i.title === title)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `\`terraform plan\` is empty again as of ${new Date().toISOString()}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+  drift-azure:
+    name: drift (azure/dev)
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/azure/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.AZURE_TFSTATE_CONTAINER }}"
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -lock=false -input=false -no-color \
+            -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 1 ]; then
+            echo "::error::terraform plan failed; this is not drift"
+            exit 1
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            terraform show -no-color tfplan > drift.txt
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the drift issue
+        if: steps.plan.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: azure/dev
+          PLAN_FILE: infra/envs/azure/dev/drift.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8').slice(0, 60000);
+            const body = [
+              `\`terraform plan\` on \`${process.env.CLOUD}\` is not empty at ${new Date().toISOString()}.`,
+              '',
+              'Either someone changed infrastructure by hand, or the state and the code disagree.',
+              'Decide which, then either codify the change or apply to revert it. This issue is',
+              'updated in place on every run, so it closes itself once the plan is empty again.',
+              '',
+              '<details><summary>Plan</summary>',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            const existing = open.data.find((i) => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['drift'],
+              });
+            }
+
+      - name: Close the drift issue when the plan is empty
+        if: steps.plan.outputs.drift == 'false'
+        uses: actions/github-script@v7
+        env:
+          CLOUD: azure/dev
+        with:
+          script: |
+            const title = `Drift detected: ${process.env.CLOUD}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            for (const issue of open.data.filter((i) => i.title === title)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `\`terraform plan\` is empty again as of ${new Date().toISOString()}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }

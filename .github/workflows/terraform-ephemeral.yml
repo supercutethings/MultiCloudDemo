@@ -1,0 +1,199 @@
+name: terraform-ephemeral
+
+# A throwaway environment that is created, tested and destroyed in one run.
+#
+# It is manual on purpose. This is the only workflow in the repository that spends real
+# money by existing, and it does it twice: once to create, once to confirm the destroy
+# left nothing behind.
+#
+# Two details keep it from touching the standing environment:
+#
+#   * it initialises a **separate state key**, so `terraform destroy` can only ever delete
+#     what this run created;
+#   * it passes `-var environment=ephemeral`, so every resource name differs from the
+#     `dev` ones. Two states pointing at the same names would fight over the same objects.
+#
+# The destroy step is `if: always()`: a failed smoke test is exactly when a leak matters.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloud:
+        description: Which cloud to exercise
+        type: choice
+        options: [aws, azure]
+        default: aws
+      confirm:
+        description: Type "destroy" to acknowledge that everything this run creates is deleted at the end
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tf-ephemeral
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  IMAGE_TAG: ${{ github.sha }}
+  ENVIRONMENT: ephemeral
+
+jobs:
+  aws:
+    name: ephemeral (aws)
+    if: inputs.cloud == 'aws' && inputs.confirm == 'destroy' && vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment: aws-dev # reuse the existing approval gate
+    defaults:
+      run:
+        working-directory: infra/envs/aws/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-ephemeral
+
+      - name: Terraform init (separate state key)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="key=ephemeral/terraform.tfstate"
+
+      - name: Create registries
+        run: terraform apply -input=false -auto-approve -target=module.ecr -var="environment=$ENVIRONMENT"
+
+      - name: Push the commit's images
+        run: |
+          set -euo pipefail
+          REGISTRY=$(terraform output -raw ecr_repository_urls | python3 -c 'import json,sys; print(json.load(sys.stdin)["gateway"].split("/")[0])')
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+          for service in auth catalog gateway; do
+            repo=$(terraform output -raw ecr_repository_urls | python3 -c "import json,sys; print(json.load(sys.stdin)['${service}'])")
+            docker build -f "$GITHUB_WORKSPACE/apps/${service}/Dockerfile" -t "${repo}:${IMAGE_TAG}" "$GITHUB_WORKSPACE"
+            docker push "${repo}:${IMAGE_TAG}"
+          done
+
+      - name: Apply
+        run: terraform apply -input=false -auto-approve -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}"
+
+      - name: Smoke test
+        working-directory: .
+        run: bash scripts/smoke.sh "$(terraform -chdir=infra/envs/aws/dev output -raw url)"
+
+      - name: Destroy
+        if: always()
+        run: terraform destroy -input=false -auto-approve -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}"
+
+      - name: Assert nothing is left
+        if: always()
+        run: |
+          set -euo pipefail
+          set +e
+          terraform plan -detailed-exitcode -input=false -no-color \
+            -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}" > leftover.txt 2>&1
+          code=$?
+          set -e
+          cat leftover.txt
+          if [ "$code" -eq 2 ]; then
+            echo "::error::the destroy left resources behind"
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error::could not verify the destroy (plan failed)"
+            exit 1
+          fi
+          echo "state is empty: the environment is gone"
+
+  azure:
+    name: ephemeral (azure)
+    if: inputs.cloud == 'azure' && inputs.confirm == 'destroy' && vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    environment: azure-dev
+    defaults:
+      run:
+        working-directory: infra/envs/azure/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init (separate state blob)
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.AZURE_TFSTATE_CONTAINER }}" \
+            -backend-config="key=ephemeral.tfstate"
+
+      - name: Create the registry
+        run: terraform apply -input=false -auto-approve -target=module.acr -var="environment=$ENVIRONMENT"
+
+      - name: Push the commit's images
+        run: |
+          set -euo pipefail
+          REGISTRY=$(terraform output -raw acr_login_server)
+          TOKEN=$(az acr login --name "${REGISTRY%%.*}" --expose-token --output tsv --query accessToken)
+          echo "$TOKEN" | docker login "$REGISTRY" \
+            --username 00000000-0000-0000-0000-000000000000 --password-stdin
+
+          for service in auth catalog gateway; do
+            docker build -f "$GITHUB_WORKSPACE/apps/${service}/Dockerfile" \
+              -t "${REGISTRY}/${service}:${IMAGE_TAG}" "$GITHUB_WORKSPACE"
+            docker push "${REGISTRY}/${service}:${IMAGE_TAG}"
+          done
+
+      - name: Apply
+        run: terraform apply -input=false -auto-approve -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}"
+
+      - name: Smoke test
+        working-directory: .
+        run: bash scripts/smoke.sh "$(terraform -chdir=infra/envs/azure/dev output -raw url)"
+
+      - name: Destroy
+        if: always()
+        run: terraform destroy -input=false -auto-approve -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}"
+
+      - name: Assert nothing is left
+        if: always()
+        run: |
+          set -euo pipefail
+          set +e
+          terraform plan -detailed-exitcode -input=false -no-color \
+            -var="environment=$ENVIRONMENT" -var="image_tag=${IMAGE_TAG}" > leftover.txt 2>&1
+          code=$?
+          set -e
+          cat leftover.txt
+          if [ "$code" -eq 2 ]; then
+            echo "::error::the destroy left resources behind"
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error::could not verify the destroy (plan failed)"
+            exit 1
+          fi
+          echo "state is empty: the environment is gone"

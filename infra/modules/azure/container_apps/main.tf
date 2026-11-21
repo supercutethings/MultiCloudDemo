@@ -157,7 +157,7 @@ resource "azurerm_container_app" "internal" {
       # Probes hit the plaintext ops surface. The data port is 8443 on the mTLS legs;
       # here everything listens on 8000 because ingress already terminated TLS.
       liveness_probe {
-        transport               = "Http"
+        transport               = "HTTP"
         port                    = var.probe_port
         path                    = "/healthz"
         initial_delay           = 10
@@ -167,7 +167,7 @@ resource "azurerm_container_app" "internal" {
       }
 
       readiness_probe {
-        transport               = "Http"
+        transport               = "HTTP"
         port                    = var.probe_port
         path                    = "/readyz"
         initial_delay           = 5
@@ -244,7 +244,7 @@ resource "azurerm_container_app" "public" {
       }
 
       liveness_probe {
-        transport               = "Http"
+        transport               = "HTTP"
         port                    = var.probe_port
         path                    = "/healthz"
         initial_delay           = 10
@@ -254,7 +254,7 @@ resource "azurerm_container_app" "public" {
       }
 
       readiness_probe {
-        transport               = "Http"
+        transport               = "HTTP"
         port                    = var.probe_port
         path                    = "/readyz"
         initial_delay           = 5

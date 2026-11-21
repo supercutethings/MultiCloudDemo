@@ -8,6 +8,8 @@ Three workflows, each with a different job:
 | `k8s-validate` | push, pull request (manifests, policies) | none — render, `kubeconform -strict`, `conftest` |
 | `terraform-plan` | pull request (`infra/**`, `platform/**`), manual | OIDC, optional per cloud |
 | `terraform-apply` | push to `main`, manual | OIDC, optional per cloud |
+| `terraform-drift` | daily schedule, manual | OIDC, optional per cloud — an empty plan is the green case |
+| `terraform-ephemeral` | manual only | OIDC; creates a throwaway environment and destroys it in the same run |
 
 The `validate` job inside `terraform-plan` runs on every pull request with **no credentials
 at all**: `terraform fmt -check` plus `init -backend=false` and `validate` in every module and
@@ -106,6 +108,47 @@ apply -target=module.acr      →  build and push images  →  apply -var image_
 
 `image_tag` is the commit SHA, never `latest`, so the deployed revision is traceable to a
 commit and a re-run of the same commit is a no-op rather than a silent redeploy.
+
+## Contract tests
+
+`tests/terraform/` runs `terraform test` against **mocked** AWS, Azure and GCP providers and
+asserts the contract in `infra/contracts/README.md`: an internal URL, a public URL, a log
+destination, and one workload identity per app. No credentials, no account, a few seconds.
+
+```bash
+cd tests/terraform && terraform init -backend=false && terraform test
+```
+
+It is not ceremony. On its first run it caught `transport = "Http"` in the Container Apps
+module — a value `terraform validate` accepts and the provider rejects at apply time, which
+is exactly the class of mistake that otherwise surfaces twenty minutes into a deploy.
+
+## Drift detection
+
+`terraform-drift` plans every environment that has credentials, daily at 05:17 UTC, with
+`-detailed-exitcode`:
+
+| Exit code | Meaning | What the workflow does |
+|---|---|---|
+| 0 | no changes | closes the drift issue if one is open |
+| 2 | drift | opens or refreshes one issue per environment |
+| 1 | the plan failed | fails the job — an error is not drift |
+
+One issue per environment, updated in place and closed automatically once the plan is empty
+again. GCP has no job yet because it has no Workload Identity Federation pool, and a job
+that can only ever be skipped is noise.
+
+## Ephemeral environment
+
+`terraform-ephemeral` is manual only, because it is the one workflow that spends money by
+existing. It creates an environment, smoke-tests it, and destroys it — with the destroy in
+an `if: always()` step, so a failed smoke test still tears it down.
+
+Two details keep it away from the standing environment: it initialises a **separate state
+key** (`ephemeral/terraform.tfstate`), so `destroy` can only delete what the run created,
+and it passes `-var environment=ephemeral`, so no resource name collides. The final
+`plan -detailed-exitcode` must return 0, which is the only proof that the destroy actually
+removed everything.
 
 ## Running a plan by hand
 
