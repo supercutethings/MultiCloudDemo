@@ -1,0 +1,51 @@
+# ClusterIP only. There is no LoadBalancer or NodePort Service anywhere in this repo:
+# every byte of external traffic enters through an Ingress, which gives one place for TLS,
+# one place for the cloud load balancer, and no accidentally-public Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  labels:
+    app.kubernetes.io/name: auth
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: auth
+  ports:
+    # Only the mTLS data port is exposed. The ops port stays pod-local for probes.
+    - name: mtls
+      port: 8443
+      targetPort: data
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog
+  labels:
+    app.kubernetes.io/name: catalog
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: catalog
+  ports:
+    - name: mtls
+      port: 8443
+      targetPort: data
+      protocol: TCP

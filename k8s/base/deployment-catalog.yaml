@@ -1,0 +1,159 @@
+# Catalog: stateless CRUD in front of PostgreSQL. Scaled on CPU by the HPA in hpa.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog
+  labels:
+    app.kubernetes.io/name: catalog
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: catalog
+        app.kubernetes.io/component: backend
+      annotations:
+        # Certificate renewal rewrites the Secret; the process only re-reads it at startup,
+        # so Reloader turns a renewal into a rolling restart. Without this the cluster shows
+        # every Certificate as Ready while the pod serves an expired one.
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: catalog
+      automountServiceAccountToken: false
+      priorityClassName: platform-critical
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: catalog
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: catalog
+      containers:
+        - name: catalog
+          image: ghcr.io/example/showcase-catalog:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            # 8443: mutual TLS; only gateway pods are allowed to connect.
+            - name: data
+              containerPort: 8443
+              protocol: TCP
+            # 8000: healthz/readyz only, for kubelet probes.
+            - name: ops
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: GIT_SHA
+              value: k8s
+            - name: PORT
+              value: "8443"
+            - name: OPS_PORT
+              value: "8000"
+            # Files come from the catalog-mtls Secret, issued by cert-manager from the
+            # server CA.
+            - name: TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tls/tls.key
+            # Only the caller CAs this service accepts. The gateway is the only entry today.
+            - name: TLS_CLIENT_CA_DIR
+              value: /tls/clients
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: catalog-secrets
+                  key: database-url
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: catalog-secrets
+                  key: jwt-public-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: clients
+              mountPath: /tls/clients
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tls
+          secret:
+            secretName: catalog-mtls
+            defaultMode: 0440
+        - name: clients
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: showcase-client-ca-gateway
+                  items:
+                    - key: tls.crt
+                      path: gateway-ca.crt

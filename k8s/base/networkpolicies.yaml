@@ -1,0 +1,126 @@
+# Network policies, in the order they matter:
+#   1. deny everything in the namespace (ingress and egress);
+#   2. allow DNS, because nothing resolves without it;
+#   3. allow the ingress controller -> gateway, and gateway -> auth/catalog (mTLS, 8443);
+#   4. allow kubelet probes -> auth/catalog ops port (healthz/readyz only);
+#   5. allow the services -> PostgreSQL on 5432.
+#
+# This is the Kubernetes equivalent of the chained security groups in the ECS stack: the
+# platform does not assume the application got it right.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# The ingress controller lives in kube-system on all three clouds. Rather than allow
+# kube-system wholesale, the overlays label the *namespace* it runs in:
+#   kubectl label ns ingress-nginx networking.showcase.io/ingress=true
+# (AWS: kube-system, Azure AGIC: kube-system, GKE: gke-managed-* / kube-system.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-from-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              networking.showcase.io/ingress: "true"
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-catalog-from-gateway
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth, catalog]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        # Data plane only. The client certificate is the second lock on this door.
+        - protocol: TCP
+          port: 8443
+---
+# The ops port has to accept kubelet probes, which originate from the node, not from a
+# pod, so no podSelector can express them. Opening 8000 is an accepted trade because the
+# listener serves /healthz and /readyz and nothing else (apps/common/ops.py): no token,
+# no catalog data, no password ever crosses it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-catalog-ops-probes
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth, catalog]
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8000
+---
+# Egress to PostgreSQL. The base is intentionally port-scoped rather than CIDR-scoped
+# because the database address differs per cloud; each overlay narrows it to the private
+# subnet CIDR (see k8s/overlays/*/netpol-db.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth, catalog]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 5432

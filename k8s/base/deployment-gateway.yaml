@@ -1,0 +1,163 @@
+# Gateway: the only internet-reachable workload.
+#
+# Autoscaling note: replicas start at 3 and the HPA takes it to 24. The topology spread
+# constraint below is deliberately *soft* (`ScheduleAnyway`). A hard zone constraint
+# (`DoNotSchedule`) with maxSkew: 1 would deadlock the moment replicas exceed zones x 1 --
+# the 4th pod in a 3-zone cluster can never satisfy skew <= 1 and would sit Pending
+# forever. Soft spreading still scores zones evenly, and the PodDisruptionBudget keeps two
+# replicas serving during any voluntary interruption.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: edge
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0 # never drop below the declared replica count during a deploy
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: edge
+      annotations:
+        # The client certificate is renewed in place by cert-manager; Reloader restarts the
+        # pod so the new identity is actually loaded (see ADR 0006).
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      priorityClassName: platform-critical
+      # Longer than the 5s preStop sleep plus in-flight requests, so the load balancer can
+      # deregister the pod before it disappears.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      containers:
+        - name: gateway
+          image: ghcr.io/example/showcase-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            # Internal hops are mutual TLS. The gateway verifies the service certificate
+            # against the platform CA and presents its own client certificate; the service
+            # rejects any caller without one during the handshake.
+            - name: AUTH_SERVICE_URL
+              value: https://auth:8443
+            - name: CATALOG_SERVICE_URL
+              value: https://catalog:8443
+            - name: GIT_SHA
+              value: k8s
+            # The gateway trusts the *server* CA -- a different trust domain from the CA
+            # that signed its own client certificate, so a leaked client identity cannot
+            # be used to impersonate auth or catalog.
+            - name: TLS_CA_FILE
+              value: /tls/trust/server-ca.crt
+            - name: TLS_CLIENT_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_CLIENT_KEY_FILE
+              value: /tls/tls.key
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: jwt-public-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Startup allows for a slow node pull; liveness is /healthz (process only) while
+          # readiness is /readyz (which also reports upstream reachability).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                # Give the ingress controller time to remove this pod from its targets.
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: trust
+              mountPath: /tls/trust
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tls
+          secret:
+            secretName: gateway-mtls
+            defaultMode: 0440
+        # The CA the gateway is willing to accept as *upstream*. It is the server CA, not
+        # the CA that issued this pod's own certificate.
+        - name: trust
+          secret:
+            secretName: showcase-server-ca
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: server-ca.crt

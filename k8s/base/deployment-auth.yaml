@@ -1,0 +1,170 @@
+# Auth: holds the only copy of the RS256 private key, so it is the highest-value pod in
+# the namespace. Internal-only: reachable from the gateway pods, nothing else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  labels:
+    app.kubernetes.io/name: auth
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: auth
+        app.kubernetes.io/component: backend
+      annotations:
+        # Certificate renewal rewrites the Secret; the process only re-reads it at startup,
+        # so Reloader turns a renewal into a rolling restart. Without this the cluster shows
+        # every Certificate as Ready while the pod serves an expired one.
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: auth
+      automountServiceAccountToken: false
+      priorityClassName: platform-critical
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: auth
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: auth
+      containers:
+        - name: auth
+          image: ghcr.io/example/showcase-auth:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            # 8443: data plane, mutual TLS, gateway pods only (see networkpolicies.yaml).
+            - name: data
+              containerPort: 8443
+              protocol: TCP
+            # 8000: ops plane, plaintext, healthz/readyz only. The kubelet cannot
+            # present a client certificate, so probes have to land here.
+            - name: ops
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: GIT_SHA
+              value: k8s
+            - name: PORT
+              value: "8443"
+            - name: OPS_PORT
+              value: "8000"
+            # Files come from the auth-mtls Secret, issued by cert-manager from the server CA.
+            - name: TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tls/tls.key
+            # Client trust: one file per *allowed caller identity*, mounted separately.
+            # Adding a service means adding its CA here (and to the NetworkPolicy) -- an
+            # explicit allow rule, not a side effect of being issued a certificate.
+            - name: TLS_CLIENT_CA_DIR
+              value: /tls/clients
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: database-url
+            - name: JWT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-private-key
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-public-key
+          resources:
+            # scrypt is deliberately expensive, so auth gets more CPU than the others.
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: clients
+              mountPath: /tls/clients
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tls
+          secret:
+            secretName: auth-mtls
+            defaultMode: 0440
+        # The allow rule, as data: every CA listed here is a caller this service accepts.
+        # Removing an entry fails that caller's next handshake; nothing else changes.
+        - name: clients
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: showcase-client-ca-gateway
+                  items:
+                    - key: tls.crt
+                      path: gateway-ca.crt

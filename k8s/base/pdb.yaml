@@ -1,0 +1,37 @@
+# PodDisruptionBudgets. These are what make node drains (upgrades, cluster autoscaler
+# scale-in, spot reclaim) safe: without a PDB, a node drain can take every gateway pod at
+# once and the load balancer returns 503 for the duration.
+#
+# minAvailable 2 with minReplicas 3 means at most one gateway pod may be voluntarily
+# disrupted at a time. Note the interaction with the cluster autoscaler: a PDB that
+# requires more available pods than the deployment has will block scale-in forever, which
+# is why these numbers track the HPA minimum rather than the maximum.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: catalog
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog

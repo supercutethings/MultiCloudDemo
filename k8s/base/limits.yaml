@@ -1,0 +1,31 @@
+# Guardrails for the whole namespace. The LimitRange gives any container that forgets a
+# request/limit a sane default (so the HPA always has a denominator), and the ResourceQuota
+# caps a runaway autoscaler at a bill everyone agreed to in advance.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-resources
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 192Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+spec:
+  hard:
+    requests.cpu: "12"
+    requests.memory: 16Gi
+    limits.cpu: "24"
+    limits.memory: 32Gi
+    pods: "80"

@@ -1,0 +1,10 @@
+# Load generators, crawlers and future side projects share the cluster with the request
+# path. A custom PriorityClass makes the kubelet evict those before it evicts the gateway,
+# which is the difference between "slow under pressure" and "503 under pressure".
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-critical
+value: 100000
+globalDefault: false
+description: "Request-path workloads (gateway, auth, catalog) that should be evicted last."

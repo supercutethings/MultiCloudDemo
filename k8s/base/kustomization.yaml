@@ -1,0 +1,26 @@
+# Provider-neutral base. Everything that is NOT here is provider-specific on purpose:
+# ingress annotations, secret stores and database network policy live in the overlays.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - priorityclass.yaml
+  - serviceaccounts.yaml
+  - configmap.yaml
+  - limits.yaml
+  - services.yaml
+  - deployment-gateway.yaml
+  - deployment-auth.yaml
+  - deployment-catalog.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicies.yaml
+
+# `includeSelectors: false` on purpose: labels are for humans and cost reports, not for
+# selectors. Mutating a Deployment's selector after the fact is an immutable-field error.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: showcase
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false

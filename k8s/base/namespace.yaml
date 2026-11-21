@@ -1,0 +1,13 @@
+# Pod Security Admission in "restricted" mode is the cheapest security win in Kubernetes:
+# it rejects privileged pods, hostPath mounts, host networking and containers without a
+# seccomp profile *at admission time*, before anything is scheduled.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: showcase
+  labels:
+    app.kubernetes.io/part-of: showcase
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

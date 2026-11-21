@@ -1,0 +1,17 @@
+# Non-secret configuration, identical to what the ECS task definition injects. Keeping the
+# names the same is the whole point: the container does not know which orchestrator it runs
+# under (apps/common/config.py reads these).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  ENVIRONMENT: "dev"
+  LOG_LEVEL: "INFO"
+  JWT_ISSUER: "showcase-auth"
+  JWT_AUDIENCE: "showcase-api"
+  ACCESS_TOKEN_TTL_SECONDS: "900"
+  REFRESH_TOKEN_TTL_SECONDS: "604800"
+  # The image already sets this; repeating it makes read-only root filesystems explicit.
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
