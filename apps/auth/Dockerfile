@@ -9,6 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# The slim base image ships OS packages that are already a release behind, and the
+# image scan fails on them. Pull the security updates at build time instead of
+# relying on a rebuild of the base tag.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first: this layer is cached until requirements.txt changes.
 COPY apps/auth/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --disable-pip-version-check -r /tmp/requirements.txt
