@@ -1,0 +1,78 @@
+# Leaves: 30 days, renewed 10 days out, with a fresh private key on every renewal
+# (`rotationPolicy: Always`). That is short enough that a stolen leaf is worthless quickly
+# and long enough that renewal is not a daily event.
+#
+# The Secret names are the ones the Deployments already mount, so changing the issuer (to
+# Vault, or ACM PCA) does not require touching a workload.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: auth-tls
+spec:
+  secretName: auth-mtls
+  commonName: auth
+  # Every name a caller dials. The short Service name is what the gateway uses; the
+  # namespace-qualified forms keep port-forwards and debugging working.
+  dnsNames:
+    - auth
+    - auth.showcase.svc
+    - auth.showcase.svc.cluster.local
+  duration: 720h # 30 days
+  renewBefore: 240h # renew with 10 days left
+  privateKey:
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: showcase-server-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: catalog-tls
+spec:
+  secretName: catalog-mtls
+  commonName: catalog
+  dnsNames:
+    - catalog
+    - catalog.showcase.svc
+    - catalog.showcase.svc.cluster.local
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: showcase-server-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# The gateway's client identity. `client auth` only: this certificate cannot be used to
+# impersonate a service, whatever a misconfigured Deployment asks for.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-client
+spec:
+  secretName: gateway-mtls
+  commonName: gateway
+  dnsNames:
+    - gateway
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    rotationPolicy: Always
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: showcase-client-ca-gateway
+    kind: Issuer
+    group: cert-manager.io

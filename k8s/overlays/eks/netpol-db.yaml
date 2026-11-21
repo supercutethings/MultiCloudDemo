@@ -1,0 +1,24 @@
+# Narrows the base `postgres-egress` policy from 0.0.0.0/0 to the VPC CIDR. Kubernetes
+# NetworkPolicy is additive, so this policy *adds* an allow rule; the base rule is replaced
+# at render time because two allows would union into 0.0.0.0/0 again.
+#
+# scripts/k8s-render.sh deletes the base policy named postgres-egress for this reason.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-egress-vpc
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth, catalog]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: __VPC_CIDR__
+      ports:
+        - protocol: TCP
+          port: 5432

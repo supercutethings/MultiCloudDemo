@@ -1,0 +1,24 @@
+# Unlike AWS and Azure, the GKE load balancer is not a pod in the cluster: health checks
+# and proxied requests arrive from Google's well-known ranges. Without this policy the
+# default-deny would blackhole every request at the node firewall.
+#
+#   130.211.0.0/22 and 35.191.0.0/16 are the documented GCLB health-check/proxy ranges.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-from-gclb
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 130.211.0.0/22
+        - ipBlock:
+            cidr: 35.191.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8000

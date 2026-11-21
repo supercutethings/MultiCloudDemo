@@ -1,0 +1,37 @@
+# Application Gateway Ingress Controller (enabled by the AKS Terraform module) watches this
+# Ingress and programs an Azure Application Gateway: managed WAF-capable L7 entrypoint,
+# zone-redundant by default when the gateway SKU is v2, with health probes pointed at
+# /readyz.
+#
+# TLS comes from a Kubernetes secret, so bring a certificate (or cert-manager):
+#   kubectl create secret tls gateway-tls -n showcase --cert=fullchain.pem --key=privkey.pem
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  annotations:
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    appgw.ingress.kubernetes.io/health-probe-path: /readyz
+    appgw.ingress.kubernetes.io/health-probe-interval: "10"
+    appgw.ingress.kubernetes.io/health-probe-timeout: "5"
+    appgw.ingress.kubernetes.io/connection-draining: "true"
+    appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+    appgw.ingress.kubernetes.io/request-timeout: "30"
+spec:
+  ingressClassName: azure-application-gateway
+  tls:
+    - hosts:
+        - __APP_HOST__
+      secretName: gateway-tls
+  rules:
+    - host: __APP_HOST__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8000

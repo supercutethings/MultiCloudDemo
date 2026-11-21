@@ -1,0 +1,24 @@
+# Internal PKI as a kustomize component, included by all three overlays.
+#
+# Why a component and not base/ or overlay/: the objects are identical on every cloud (it is
+# the same cert-manager), and keeping them in one place is what makes "the certificate story
+# is the same on EKS, AKS and GKE" true rather than aspirational. An overlay that wants a
+# different issuer (Vault, ACM PCA) removes the component and points the Deployments at the
+# same three Secret names -- nothing else in the manifests changes.
+#
+# The chain:
+#   Issuer showcase-bootstrap (selfSigned)
+#     -> Certificate showcase-server-ca          5 years, isCA, rotationPolicy: Never
+#     -> Certificate showcase-client-ca-gateway  5 years, isCA, rotationPolicy: Never
+#          -> Issuer showcase-server-ca          signs auth + catalog leaves
+#          -> Issuer showcase-client-ca-gateway  signs the gateway's client certificate
+#
+# Trust is *not* transitive by accident: auth and catalog mount the client CA (and only the
+# client CAs they allow), while the gateway mounts the server CA. A leaf from the wrong
+# side of that split fails the handshake, and that is the point.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - issuers.yaml
+  - certificates.yaml

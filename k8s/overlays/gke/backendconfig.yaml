@@ -1,0 +1,22 @@
+# The GCE load balancer does not read pod probes: it needs its own health check. Pointing
+# it at /readyz keeps the same "only send traffic to something that can serve it" contract
+# as the ALB target group and the Application Gateway probe.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: gateway-backendconfig
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /readyz
+    port: 8000
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 3
+  connectionDraining:
+    drainingTimeoutSec: 30
+  timeoutSec: 30
+  logging:
+    enable: true
+    sampleRate: 1.0

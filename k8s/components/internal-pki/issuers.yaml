@@ -1,0 +1,63 @@
+# Bootstrap: a selfSigned issuer exists only to sign the two CAs once. Nothing else uses it.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: showcase-bootstrap
+spec:
+  selfSigned: {}
+---
+# Server CA: signs what auth and catalog present. Five years, and `rotationPolicy: Never`
+# because rotating this key invalidates every leaf and forces a simultaneous rollout --
+# a deliberate operation, not something a timer should do at 3am.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: showcase-server-ca
+spec:
+  isCA: true
+  commonName: showcase-internal-server-ca
+  secretName: showcase-server-ca
+  duration: 43800h # 5 years
+  renewBefore: 8760h # start warning a year out; renewal is a planned change
+  privateKey:
+    rotationPolicy: Never
+  issuerRef:
+    name: showcase-bootstrap
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: showcase-server-ca
+spec:
+  ca:
+    secretName: showcase-server-ca
+---
+# One caller identity, one CA. Onboarding a service means issuing it from its own CA and
+# adding that CA to the servers' trust bundles; it does not mean handing out a certificate
+# that every service already accepts.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: showcase-client-ca-gateway
+spec:
+  isCA: true
+  commonName: showcase-internal-gateway-client-ca
+  secretName: showcase-client-ca-gateway
+  duration: 43800h # 5 years
+  renewBefore: 8760h
+  privateKey:
+    rotationPolicy: Never
+  issuerRef:
+    name: showcase-bootstrap
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: showcase-client-ca-gateway
+spec:
+  ca:
+    secretName: showcase-client-ca-gateway

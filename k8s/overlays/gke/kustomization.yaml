@@ -1,0 +1,49 @@
+# GKE overlay. GCE Ingress + ManagedCertificate + BackendConfig, Secret Manager-backed
+# ExternalSecrets, and network policies narrowed to the VPC and Google's load balancer
+# ranges.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showcase
+
+resources:
+  - ../../base
+  - ingress.yaml
+  - certificate.yaml
+  - backendconfig.yaml
+  - secrets.yaml
+  - netpol-db.yaml
+  - netpol-gclb.yaml
+
+# Internal PKI (cert-manager). Note this is unrelated to certificate.yaml, which is the
+# *public* GCLB managed certificate for the ingress.
+components:
+  - ../../components/internal-pki
+
+labels:
+  - pairs:
+      cloud: gcp
+    includeSelectors: false
+
+patches:
+  # The base policy allows 5432 to any host; this overlay replaces it with a VPC-scoped one.
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: postgres-egress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postgres-egress
+  # GCE Ingress ignores the pod readiness probe and uses a BackendConfig instead.
+  - target:
+      kind: Service
+      name: gateway
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/backend-config: '{"default":"gateway-backendconfig"}'

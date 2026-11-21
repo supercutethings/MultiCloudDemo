@@ -1,0 +1,35 @@
+# AKS overlay. Application Gateway Ingress Controller, Key Vault-backed ExternalSecrets,
+# and a NetworkPolicy narrowed to the VNet CIDR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showcase
+
+resources:
+  - ../../base
+  - ingress.yaml
+  - secrets.yaml
+  - netpol-db.yaml
+
+# Internal PKI (cert-manager): the same objects as EKS and GKE.
+components:
+  - ../../components/internal-pki
+
+labels:
+  - pairs:
+      cloud: azure
+    includeSelectors: false
+
+patches:
+  # Base allows 5432 to any host; replace it with the VNet-scoped policy below.
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: postgres-egress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postgres-egress

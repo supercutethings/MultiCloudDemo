@@ -1,0 +1,21 @@
+# The Flexible Server is delegated into its own subnet inside the VNet, so egress from the
+# auth/catalog pods is allowed to the VNet range only, on 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-egress-vnet
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth, catalog]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: __VNET_CIDR__
+      ports:
+        - protocol: TCP
+          port: 5432

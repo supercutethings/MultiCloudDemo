@@ -1,0 +1,10 @@
+# Google-managed certificate: provisioning and renewal happen outside the cluster, and the
+# private key never exists in the namespace. Requires the domain to resolve to the reserved
+# static IP.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: gateway-cert
+spec:
+  domains:
+    - __APP_HOST__

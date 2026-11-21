@@ -1,0 +1,38 @@
+# EKS overlay. Provider-specific pieces only: the AWS Load Balancer Controller Ingress,
+# the Secrets Manager-backed ExternalSecrets, and a NetworkPolicy narrowed to the VPC CIDR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showcase
+
+resources:
+  - ../../base
+  - ingress.yaml
+  - secrets.yaml
+  - netpol-db.yaml
+
+# Internal PKI (cert-manager): identical on all three clouds, so it is a component rather
+# than three copies. It produces auth-mtls / catalog-mtls / gateway-mtls plus the two CA
+# Secrets the Deployments trust.
+components:
+  - ../../components/internal-pki
+
+labels:
+  - pairs:
+      cloud: aws
+    includeSelectors: false
+
+patches:
+  # Base allows 5432 to any host; replace it with the VPC-scoped policy below.
+  # NetworkPolicy is additive, so leaving both would union back to 0.0.0.0/0.
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: postgres-egress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postgres-egress
