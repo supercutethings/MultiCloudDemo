@@ -1,0 +1,95 @@
+# Certificate expiry and readiness alerts.
+#
+# Applied separately from the application overlays (`scripts/cluster-addons.sh --monitoring`)
+# because the PrometheusRule and ServiceMonitor are only meaningful once cert-manager's
+# metrics are being scraped. Applying them into a cluster without the operator would fail
+# the whole `kubectl apply`, which is a bad trade for an optional observability add-on.
+#
+# The alert on *expiry* is the backstop, not the mechanism: cert-manager renews leaves at
+# 10 days out. An alert here means renewal is failing (a broken issuer, a full disk, an
+# unreachable ACME server) and nothing has noticed.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: internal-certificates
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack only selects rules carrying its release label.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: internal-certificates
+      rules:
+        - alert: InternalCertificateExpiringSoon
+          # 21 days: before cert-manager's own renewal at 10 days would have happened, so
+          # this fires when renewal is late rather than when it is merely due.
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds{namespace="showcase"} - time() < 21 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Internal certificate {{ $labels.name }} expires in under 21 days"
+            description: >-
+              cert-manager has not renewed {{ $labels.namespace }}/{{ $labels.name }}.
+              Check `kubectl -n showcase describe certificate {{ $labels.name }}` and the
+              cert-manager controller logs; the pod is still serving the old certificate.
+
+        - alert: InternalCertificateExpiryCritical
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds{namespace="showcase"} - time() < 7 * 24 * 3600
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Internal certificate {{ $labels.name }} expires in under 7 days"
+            description: >-
+              When this expires the handshake fails and the service stops accepting calls.
+              Run `scripts/cert-expiry.sh --kube` for the current state of every internal
+              certificate.
+
+        - alert: InternalCertificateNotReady
+          expr: |
+            certmanager_certificate_ready_status{namespace="showcase", condition="False"} == 1
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Certificate {{ $labels.name }} is not ready"
+            description: >-
+              The Certificate resource is failing to issue or renew. The pods keep serving
+              whatever is on disk until it expires, so this is the early warning.
+
+        - alert: InternalCAExpiryApproaching
+          # CAs live for 5 years; a year of notice is enough for a planned re-issue.
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds{namespace="showcase", name=~".*-ca.*"} - time() < 365 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Internal CA {{ $labels.name }} expires within a year"
+            description: >-
+              Rotating a CA invalidates every leaf it signed, so plan a window: re-issue the
+              CA, roll the servers, then roll the callers.
+---
+# cert-manager's own metrics endpoint. The chart exposes it on the `http-metrics` port of
+# its controller Service; the label pair below matches the chart's default labels.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - cert-manager
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
+  endpoints:
+    - port: http-metrics
+      interval: 60s
