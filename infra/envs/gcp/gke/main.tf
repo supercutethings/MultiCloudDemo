@@ -105,9 +105,9 @@ module "gke" {
   min_nodes_per_zone = var.min_nodes_per_zone
   max_nodes_per_zone = var.max_nodes_per_zone
 
-  enable_private_endpoint     = var.enable_private_endpoint
-  master_authorized_networks  = var.master_authorized_networks
-  deletion_protection         = var.deletion_protection
+  enable_private_endpoint    = var.enable_private_endpoint
+  master_authorized_networks = var.master_authorized_networks
+  deletion_protection        = var.deletion_protection
 
   labels = local.labels
 }

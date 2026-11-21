@@ -38,7 +38,8 @@ jobs:
       - name: Validate modules
         run: |
           set -euo pipefail
-          for dir in infra/modules/aws/* infra/envs/aws/dev infra/bootstrap/aws; do
+          for dir in infra/modules/aws/* infra/modules/azure/* infra/envs/aws/dev \
+                     infra/envs/azure/* infra/bootstrap/aws; do
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
             terraform -chdir="$dir" validate

@@ -140,7 +140,7 @@ resource "azurerm_kubernetes_cluster" "this" {
   workload_identity_enabled = true
   azure_policy_enabled      = true
   image_cleaner_enabled     = true
-  automatic_channel_upgrade = "patch"
+  automatic_upgrade_channel = "patch"
 
   private_cluster_enabled = var.private_cluster_enabled
 

@@ -42,11 +42,11 @@ module "aks" {
   resource_group_name = azurerm_resource_group.this.name
   name_suffix         = random_string.suffix.result
 
-  vnet_cidr           = var.vnet_cidr
-  node_subnet_cidr    = var.node_subnet_cidr
-  data_subnet_cidr    = var.data_subnet_cidr
+  vnet_cidr            = var.vnet_cidr
+  node_subnet_cidr     = var.node_subnet_cidr
+  data_subnet_cidr     = var.data_subnet_cidr
   endpoint_subnet_cidr = var.endpoint_subnet_cidr
-  appgw_subnet_cidr   = var.appgw_subnet_cidr
+  appgw_subnet_cidr    = var.appgw_subnet_cidr
 
   node_vm_size   = var.node_vm_size
   node_min_count = var.node_min_count
@@ -133,7 +133,7 @@ resource "azurerm_key_vault" "this" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = "standard"
 
-  enable_rbac_authorization     = true
+  rbac_authorization_enabled    = true
   purge_protection_enabled      = var.environment == "prod"
   soft_delete_retention_days    = 7
   public_network_access_enabled = true
@@ -258,12 +258,12 @@ resource "azurerm_user_assigned_identity" "eso" {
 }
 
 resource "azurerm_federated_identity_credential" "eso" {
-  name                      = "external-secrets"
-  resource_group_name       = azurerm_resource_group.this.name
-  parent_id                 = azurerm_user_assigned_identity.eso.id
-  audience                  = ["api://AzureADTokenExchange"]
-  issuer                    = module.aks.oidc_issuer_url
-  subject                   = "system:serviceaccount:external-secrets:external-secrets"
+  name                = "external-secrets"
+  resource_group_name = azurerm_resource_group.this.name
+  parent_id           = azurerm_user_assigned_identity.eso.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = module.aks.oidc_issuer_url
+  subject             = "system:serviceaccount:external-secrets:external-secrets"
 }
 
 resource "azurerm_role_assignment" "eso_secrets" {

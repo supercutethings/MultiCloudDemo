@@ -2,9 +2,9 @@ data "aws_region" "current" {}
 
 locals {
   tags = {
-    Project     = var.name_prefix
-    Service     = var.name
-    ManagedBy   = "terraform"
+    Project   = var.name_prefix
+    Service   = var.name
+    ManagedBy = "terraform"
   }
 
   container_health_check = {

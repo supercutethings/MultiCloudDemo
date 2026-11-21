@@ -30,15 +30,19 @@ silently dropped.
 
 ## Provider mapping (implemented status)
 
-| Contract concept | AWS (implemented) | Azure (planned) | GCP (planned) |
+| Contract concept | AWS (implemented) | Azure (implemented) | GCP (planned) |
 |---|---|---|---|
-| Public entrypoint | ALB + HTTPS listener | Container Apps ingress | Global HTTPS LB |
-| Compute | ECS Fargate | Container Apps | Cloud Run |
-| Service discovery | Cloud Map private DNS | Container Apps internal DNS | Cloud Run internal URL |
-| Database | RDS PostgreSQL | Flexible Server | Cloud SQL |
-| Secrets | Secrets Manager | Key Vault | Secret Manager |
-| Registry | ECR (immutable tags) | ACR | Artifact Registry |
-| Workload identity | ECS task role | Managed identity | Runtime service account |
+| Public entrypoint | ALB + HTTPS listener | Container Apps ingress (platform TLS) | Global HTTPS LB |
+| Compute | ECS Fargate | Container Apps (consumption, scale to zero) | Cloud Run |
+| Service discovery | Cloud Map private DNS | Container Apps internal ingress FQDN | Cloud Run internal URL |
+| Database | RDS PostgreSQL | Flexible Server, delegated subnet | Cloud SQL |
+| Secrets | Secrets Manager | Key Vault (one secret per value, RBAC) | Secret Manager |
+| Registry | ECR (immutable tags) | ACR (admin account disabled) | Artifact Registry |
+| Workload identity | ECS task role | User-assigned managed identity per app | Runtime service account |
+
+Azure fills every row, with one deliberate difference: Container Apps ingress terminates TLS
+and forwards plaintext to the container, so the internal hop is HTTP inside the environment
+instead of application-level mTLS. That gap is recorded in `docs/cloud-matrix.md`.
 
 The parity tests in `tests/terraform/` (Phase 4) assert that a module exposes every output
 above, so the contract cannot rot without a red build.

@@ -27,6 +27,7 @@ Client ──HTTPS──▶ Load balancer ──▶ gateway ──┬──▶ a
 - [Architecture](#architecture)
 - [Quick start](#quick-start-2-minutes)
 - [Deploy to AWS](#deploy-to-aws)
+- [Deploy to Azure](#deploy-to-azure-container-apps)
 - [Deploy to Kubernetes](#deploy-to-kubernetes-eks--aks--gke)
 - [Internal mutual TLS](#internal-mutual-tls)
 - [Security decisions](#security-decisions-worth-a-look)
@@ -45,7 +46,7 @@ Client ──HTTPS──▶ Load balancer ──▶ gateway ──┬──▶ a
 | EKS + ALB Ingress | AWS | ✅ cluster, HPA + autoscaler, 3-AZ | `infra/envs/aws/eks`, `k8s/overlays/eks` |
 | AKS + App Gateway | Azure | ✅ cluster, node autoscaler, 3-AZ | `infra/envs/azure/aks`, `k8s/overlays/aks` |
 | GKE regional + GCLB | GCP | ✅ cluster, node autoscaler, 3-zone | `infra/envs/gcp/gke`, `k8s/overlays/gke` |
-| Container Apps | Azure | 🚧 Phase 2 — serverless leg | `infra/modules/azure` (next) |
+| Container Apps | Azure | ✅ environment, identity per app, scale to zero | `infra/envs/azure/dev` |
 | Cloud Run | GCP | 🚧 Phase 3 — serverless leg | `infra/modules/gcp` (next) |
 
 Honest status beats a green badge. What exists runs; what does not is labelled.
@@ -131,6 +132,36 @@ make smoke LOCAL_URL="$(terraform output -raw url)"
 see [docs/cost.md](docs/cost.md) for the full breakdown, the surprisingly patchy free tier,
 and seven cheaper alternatives (2-hour demo: **$0.26**).
 
+## Deploy to Azure (Container Apps)
+
+```bash
+cd infra/envs/azure/dev
+cp backend.example.hcl backend.hcl          # point it at your state account
+terraform init -backend-config=backend.hcl
+terraform apply                             # VNet, ACR, vault, database, environment
+
+# The apps cannot start before the images exist, so push first.
+PREFIX=$(terraform output -raw image_repository_prefix)
+az acr login --name "$(terraform output -raw acr_login_server | cut -d. -f1)"
+for service in auth catalog gateway; do
+  docker build -f "apps/$service/Dockerfile" -t "$PREFIX/$service:1.0.0" .
+  docker push "$PREFIX/$service:1.0.0"
+done
+
+terraform apply -var="image_tag=1.0.0"      # rolls the apps onto the pushed images
+make smoke LOCAL_URL="$(terraform output -raw url)"
+```
+
+The database has no public endpoint, the vault is reached through a private endpoint, and
+each app pulls images and reads secrets with its own managed identity — there is no
+registry password and no connection string in the container definition. Internal services
+scale to zero; the gateway keeps one replica warm so the URL answers immediately.
+
+One honest difference from the other legs: Container Apps ingress terminates TLS and
+forwards plaintext, so the internal hop is HTTP *inside* the environment instead of
+application-level mTLS. The boundary still holds — only the gateway has external ingress —
+but the transport guarantee does not, and [docs/cloud-matrix.md](docs/cloud-matrix.md) says so.
+
 ## Deploy to Kubernetes (EKS / AKS / GKE)
 
 Same images, same env vars, same smoke test. One provider-neutral base and three overlays;
@@ -204,7 +235,7 @@ infra/
   contracts/  the provider-neutral interface every cloud module must satisfy
   bootstrap/  per-cloud state backend and CI trust (applied once, by a human)
   modules/    reusable provider modules (network, ecr, rds, service, alb, pki, eks)
-  envs/       environments composed from modules (aws/dev, aws/eks, azure/aks, gcp/gke)
+  envs/       environments composed from modules (aws/dev, aws/eks, azure/aks, azure/dev, gcp/gke)
 platform/
   policies/   Conftest rules the plan and the manifests must pass before they can apply
 scripts/      local PKI, smoke test, mTLS checks, load test, renderer, add-ons
@@ -252,11 +283,27 @@ deployable state of the platform, and the changelog records what changed and why
 
 | Version | Milestone | Highlights |
 |---|---|---|
+| **v0.4.0** | Azure serverless leg | Container Apps injected into a VNet, one managed identity per app, Flexible Server with no public endpoint, Key Vault behind a private endpoint, ACR with the admin account disabled, scale to zero when idle |
 | **v0.3.0** | Internal PKI and mutual TLS | Two trust domains, app-level mTLS on 8443, cert-manager issuance and rotation, Reloader rollout, expiry alerts at 21/7 days, policy rules for `Certificate` hygiene |
 | **v0.2.0** | Kubernetes runtime | EKS, AKS and GKE from one base, three-AZ node pools, HPA + node autoscaling, PDBs, default-deny NetworkPolicies, federated secret access, renderer that refuses incomplete overlays |
 | **v0.1.0** | AWS serverless leg | FastAPI services, local Compose stack, network/ECR/RDS/ECS/ALB modules, Cloud Map, OIDC CI, Conftest guardrails |
 
 ### Changelog
+
+**v0.4.0 — Azure serverless leg**
+
+* Added `infra/modules/azure/{network,acr,postgres,key_vault,container_apps}`: a VNet with
+  three dedicated subnets, a registry with no admin account, a Flexible Server with no
+  public endpoint, a vault reached through a private endpoint, and the environment plus
+  apps themselves.
+* Added `infra/envs/azure/dev`: three services on Container Apps, one user-assigned identity
+  per app, secrets resolved from Key Vault by that identity, and gateway upstream URLs read
+  from the real internal FQDNs instead of an assembled hostname.
+* Three new Conftest rules: no publicly reachable Flexible Server, no Container App with
+  `allow_insecure_connections`, no ACR admin account.
+* CI now validates the Azure modules and environment alongside the AWS ones.
+* Documented the one genuine gap: Container Apps ingress terminates TLS, so the internal
+  hop is HTTP inside the environment rather than application-level mTLS.
 
 **v0.3.0 — internal PKI and mutual TLS**
 
@@ -292,7 +339,6 @@ deployable state of the platform, and the changelog records what changed and why
 
 ### Unreleased
 
-* Phase 2 — Azure Container Apps leg (see the roadmap).
 * Phase 3 — GCP Cloud Run leg.
 * Phase 4 — `terraform test` for the contract, drift detection, k6 through the load
   balancer, JWT key-rotation runbook.
@@ -302,7 +348,8 @@ deployable state of the platform, and the changelog records what changed and why
 * **Phase 1 — AWS (done):** app, local stack, network/ECR/RDS/ECS/ALB modules, OIDC CI, policies.
 * **Phase 1.5 — Kubernetes (done):** EKS, AKS and GKE with three-AZ node pools, HPA + node
   autoscaling, PDBs, default-deny NetworkPolicies, federated secret access, load test.
-* **Phase 2 — Azure serverless:** same contract on Container Apps + Flexible Server + Key Vault.
+* **Phase 2 — Azure serverless (done):** Container Apps + Flexible Server + Key Vault + ACR,
+  VNet-injected, one managed identity per app, scale to zero when idle.
 * **Phase 3 — GCP serverless:** Cloud Run + Cloud SQL + Secret Manager; matrix filled in.
 * **Phase 4 — Hardening:** `terraform test` for the contract, ephemeral-environment apply in CI,
   drift detection, k6 load test through the LB, JWT key rotation runbook.

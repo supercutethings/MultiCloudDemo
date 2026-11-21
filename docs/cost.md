@@ -85,7 +85,7 @@ Cheaper ways to run the Kubernetes path, in order of what they teach:
 | GKE Autopilot | ≈ $120 | Per-pod billing, no node management, less to show |
 | kind / k3d locally | $0 | Proves the manifests, proves nothing about IAM or AZs |
 
-## Azure (Phase 2)
+## Azure (implemented)
 
 | Component | Size | ≈ $/month | Free tier | Cheaper alternative |
 |---|---|---|---|---|

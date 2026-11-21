@@ -111,7 +111,7 @@ resource "aws_secretsmanager_secret" "database_url" {
 }
 
 resource "aws_secretsmanager_secret_version" "database_url" {
-  secret_id     = aws_secretsmanager_secret.database_url.id
+  secret_id = aws_secretsmanager_secret.database_url.id
   # sslmode=require: the rds.force_ssl parameter group rejects plaintext anyway, but the
   # URL makes the intent explicit and tests keep working against SQLite.
   secret_string = jsonencode({ url = "${module.rds.database_url}?sslmode=require" })
@@ -154,8 +154,8 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
 # Scoped to the two secrets this platform owns -- not "*".
 data "aws_iam_policy_document" "ecs_execution_secrets" {
   statement {
-    sid       = "ReadPlatformSecrets"
-    actions   = ["secretsmanager:GetSecretValue"]
+    sid     = "ReadPlatformSecrets"
+    actions = ["secretsmanager:GetSecretValue"]
     resources = [
       aws_secretsmanager_secret.jwt.arn,
       "${aws_secretsmanager_secret.jwt.arn}*",
@@ -188,14 +188,14 @@ resource "aws_service_discovery_private_dns_namespace" "this" {
 module "auth" {
   source = "../../../modules/aws/service"
 
-  name       = "auth"
-  name_prefix = local.name_prefix
-  cluster_arn = aws_ecs_cluster.this.arn
+  name         = "auth"
+  name_prefix  = local.name_prefix
+  cluster_arn  = aws_ecs_cluster.this.arn
   cluster_name = aws_ecs_cluster.this.name
 
-  image    = "${module.ecr.repository_urls["auth"]}:${var.image_tag}"
-  cpu      = var.service_cpu
-  memory   = var.service_memory
+  image  = "${module.ecr.repository_urls["auth"]}:${var.image_tag}"
+  cpu    = var.service_cpu
+  memory = var.service_memory
 
   desired_count      = var.desired_count
   private_subnet_ids = module.network.private_subnet_ids
@@ -203,9 +203,9 @@ module "auth" {
   execution_role_arn = aws_iam_role.ecs_execution.arn
 
   # Data port is mTLS-only; 8000 is the plaintext ops port for the task health check.
-  container_port     = 8443
-  additional_ports   = [8000]
-  health_check_port  = 8000
+  container_port    = 8443
+  additional_ports  = [8000]
+  health_check_port = 8000
 
   environment_variables = merge(local.common_env, {
     PORT     = "8443"
@@ -233,9 +233,9 @@ module "catalog" {
   cluster_arn  = aws_ecs_cluster.this.arn
   cluster_name = aws_ecs_cluster.this.name
 
-  image    = "${module.ecr.repository_urls["catalog"]}:${var.image_tag}"
-  cpu      = var.service_cpu
-  memory   = var.service_memory
+  image  = "${module.ecr.repository_urls["catalog"]}:${var.image_tag}"
+  cpu    = var.service_cpu
+  memory = var.service_memory
 
   desired_count      = var.desired_count
   private_subnet_ids = module.network.private_subnet_ids
@@ -271,9 +271,9 @@ module "gateway" {
   cluster_arn  = aws_ecs_cluster.this.arn
   cluster_name = aws_ecs_cluster.this.name
 
-  image    = "${module.ecr.repository_urls["gateway"]}:${var.image_tag}"
-  cpu      = var.service_cpu
-  memory   = var.service_memory
+  image  = "${module.ecr.repository_urls["gateway"]}:${var.image_tag}"
+  cpu    = var.service_cpu
+  memory = var.service_memory
 
   desired_count      = var.desired_count
   private_subnet_ids = module.network.private_subnet_ids
@@ -290,11 +290,11 @@ module "gateway" {
   })
 
   secret_environment_variables = {
-    JWT_PUBLIC_KEY       = "${aws_secretsmanager_secret.jwt.arn}:public_key::"
+    JWT_PUBLIC_KEY = "${aws_secretsmanager_secret.jwt.arn}:public_key::"
     # The gateway verifies services with the server CA; it never trusts its own issuer.
-    TLS_CA_PEM           = "${aws_secretsmanager_secret.pki.arn}:server_ca::"
-    TLS_CLIENT_CERT_PEM  = "${aws_secretsmanager_secret.pki.arn}:gateway_cert::"
-    TLS_CLIENT_KEY_PEM   = "${aws_secretsmanager_secret.pki.arn}:gateway_key::"
+    TLS_CA_PEM          = "${aws_secretsmanager_secret.pki.arn}:server_ca::"
+    TLS_CLIENT_CERT_PEM = "${aws_secretsmanager_secret.pki.arn}:gateway_cert::"
+    TLS_CLIENT_KEY_PEM  = "${aws_secretsmanager_secret.pki.arn}:gateway_key::"
   }
 
   service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.this.id

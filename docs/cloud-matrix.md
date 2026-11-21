@@ -1,25 +1,26 @@
 # Cloud matrix
 
-Status: the **AWS serverless leg** (ECS) and **all three Kubernetes legs** (EKS, AKS, GKE)
-are implemented. Container Apps and Cloud Run are the remaining serverless legs; their rows
-are design intent, marked 🚧, and are updated as each module lands. Nothing here claims to
-work before it does.
+Status: the **AWS serverless leg** (ECS), the **Azure serverless leg** (Container Apps) and
+**all three Kubernetes legs** (EKS, AKS, GKE) are implemented. Cloud Run is the remaining
+serverless leg; its rows are design intent, marked 🚧, and are updated as the module lands.
+Nothing here claims to work before it does.
 
-| Capability | AWS | Azure (planned) | GCP (planned) |
+| Capability | AWS | Azure | GCP (planned) |
 |---|---|---|---|
-| Public entrypoint | ✅ ALB, single target group | 🚧 Container Apps ingress | 🚧 Global external HTTPS LB |
-| TLS termination | ✅ HTTPS listener + ACM (optional in dev) | 🚧 Managed certificate | 🚧 Google-managed certificate |
-| Compute | ✅ ECS Fargate | 🚧 Container Apps | 🚧 Cloud Run |
-| Replica scaling | ✅ Target tracking on CPU | 🚧 HTTP scaler rules | 🚧 Concurrency-based autoscaling |
-| Service discovery | ✅ Cloud Map private DNS | 🚧 Internal DNS | 🚧 Internal Cloud Run URL |
-| Database | ✅ RDS PostgreSQL, private | 🚧 Flexible Server, private | 🚧 Cloud SQL, private IP |
-| Secrets | ✅ Secrets Manager | 🚧 Key Vault | 🚧 Secret Manager |
-| Workload identity | ✅ One IAM role per service | 🚧 Managed identity per app | 🚧 Runtime service account per service |
-| Registry | ✅ ECR, immutable tags | 🚧 ACR | 🚧 Artifact Registry |
-| Logs | ✅ CloudWatch, JSON + request id | 🚧 Log Analytics | 🚧 Cloud Logging |
-| CI authentication | ✅ GitHub OIDC → IAM role | 🚧 Federated credential | 🚧 Workload Identity Federation |
-| State | ✅ S3 + DynamoDB lock | 🚧 Blob + lease | 🚧 GCS |
-| Approx. monthly cost | ≈ $95 (or $0.26 for 2 h) | ≈ $0–68 | ≈ $13–32 |
+| Public entrypoint | ✅ ALB, single target group | ✅ Container Apps ingress | 🚧 Global external HTTPS LB |
+| TLS termination | ✅ HTTPS listener + ACM (optional in dev) | ✅ Platform-managed certificate on the environment domain | 🚧 Google-managed certificate |
+| Compute | ✅ ECS Fargate | ✅ Container Apps (consumption) | 🚧 Cloud Run |
+| Replica scaling | ✅ Target tracking on CPU | ✅ HTTP + CPU rules, 0 → 10 | 🚧 Concurrency-based autoscaling |
+| Service discovery | ✅ Cloud Map private DNS | ✅ Internal ingress FQDN | 🚧 Internal Cloud Run URL |
+| Database | ✅ RDS PostgreSQL, private | ✅ Flexible Server, delegated subnet, no public endpoint | 🚧 Cloud SQL, private IP |
+| Secrets | ✅ Secrets Manager | ✅ Key Vault, one secret per value, RBAC | 🚧 Secret Manager |
+| Workload identity | ✅ One IAM role per service | ✅ One user-assigned identity per app | 🚧 Runtime service account per service |
+| Registry | ✅ ECR, immutable tags | ✅ ACR, admin account disabled | 🚧 Artifact Registry |
+| Logs | ✅ CloudWatch, JSON + request id | ✅ Log Analytics | 🚧 Cloud Logging |
+| CI authentication | ✅ GitHub OIDC → IAM role | 🚧 Federated credential (not wired yet) | 🚧 Workload Identity Federation |
+| State | ✅ S3 + DynamoDB lock | 🚧 Blob + lease (`backend.example.hcl`) | 🚧 GCS |
+| Internal transport | ✅ Application-level mTLS on 8443 | ⚠️ HTTP inside the environment (ingress terminates TLS) | 🚧 TBD |
+| Approx. monthly cost | ≈ $95 (or $0.26 for 2 h) | ≈ $0–68 (≈ $0 idle) | ≈ $13–32 |
 
 ## Kubernetes runtime (EKS / AKS / GKE)
 
@@ -64,7 +65,7 @@ README of a senior portfolio, not hidden in commit messages.
 * ECS service `wait_for_steady_state` is the difference between "apply succeeded" and
   "apply succeeded *and* the container is actually healthy". It is enabled.
 
-**Azure (expected)**
+**Azure**
 
 * Container Apps ingress has no path-based routing rules (traffic splits across revisions,
   not paths). That is precisely why the gateway exists in this architecture: the routing
@@ -73,7 +74,16 @@ README of a senior portfolio, not hidden in commit messages.
   `*.azurecontainerapps.io` domain you get HTTPS, but nothing to demonstrate about cert
   lifecycle management.
 * `minReplicas: 0` is what makes the stack free when idle, and what makes the first request
-  after a quiet period slow (~2–5 s). That trade-off is documented rather than discovered.
+  after a quiet period slow (~2–5 s). That trade-off is documented rather than discovered;
+  `infra/envs/azure/dev` keeps one warm gateway replica and lets the internal services
+  scale to zero.
+* Internal ingress terminates TLS and forwards plaintext to the container, with no client
+  certificate passthrough. So this leg keeps the *boundary* (only the gateway is public,
+  the rest is reachable only inside the environment) but not the application-level mTLS
+  that ECS and Kubernetes use — a real gap, recorded in the table above rather than
+  papered over.
+* A delegated subnet belongs to the service it is delegated to. The database and the app
+  environment therefore cannot share one, which is why the VNet has three.
 
 **Kubernetes specifics**
 

@@ -41,3 +41,40 @@ deny[msg] {
 
   msg := sprintf("%s: RDS must not be publicly accessible", [resource.address])
 }
+
+# 4. The Azure database must stay inside its delegated subnet.
+deny[msg] {
+  resource := input.resource_changes[_]
+  action := resource.change.actions[_]
+  action != "delete"
+  resource.type == "azurerm_postgresql_flexible_server"
+
+  resource.change.after.public_network_access_enabled
+
+  msg := sprintf("%s: Flexible Server must not enable public network access", [resource.address])
+}
+
+# 5. Container Apps must not serve plaintext on a public listener.
+deny[msg] {
+  resource := input.resource_changes[_]
+  action := resource.change.actions[_]
+  action != "delete"
+  resource.type == "azurerm_container_app"
+
+  ingress := resource.change.after.ingress[_]
+  ingress.allow_insecure_connections
+
+  msg := sprintf("%s: Container App ingress must not allow insecure connections", [resource.address])
+}
+
+# 6. No registry admin account: workloads pull with a managed identity.
+deny[msg] {
+  resource := input.resource_changes[_]
+  action := resource.change.actions[_]
+  action != "delete"
+  resource.type == "azurerm_container_registry"
+
+  resource.change.after.admin_enabled
+
+  msg := sprintf("%s: ACR admin account must stay disabled; use a managed identity", [resource.address])
+}

@@ -49,12 +49,12 @@ resource "aws_db_instance" "this" {
   username = var.db_username
   password = random_password.db.result
 
-  allocated_storage     = var.allocated_storage
-  storage_type          = "gp3"
-  storage_encrypted     = true
-  publicly_accessible   = false
-  multi_az              = var.multi_az
-  db_subnet_group_name  = aws_db_subnet_group.this.name
+  allocated_storage      = var.allocated_storage
+  storage_type           = "gp3"
+  storage_encrypted      = true
+  publicly_accessible    = false
+  multi_az               = var.multi_az
+  db_subnet_group_name   = aws_db_subnet_group.this.name
   vpc_security_group_ids = [var.security_group_id]
   parameter_group_name   = aws_db_parameter_group.this.name
 
@@ -63,7 +63,7 @@ resource "aws_db_instance" "this" {
   skip_final_snapshot     = true
   apply_immediately       = true
 
-  auto_minor_version_upgrade = true
+  auto_minor_version_upgrade   = true
   performance_insights_enabled = var.performance_insights
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-postgres" })
