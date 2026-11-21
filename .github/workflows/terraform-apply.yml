@@ -27,6 +27,9 @@ jobs:
   apply:
     name: apply (aws/dev)
     runs-on: ubuntu-latest
+    # A fresh clone has no AWS account wired up. Without this guard the job fails
+    # on a missing repository variable instead of reporting "nothing to deploy".
+    if: vars.AWS_ROLE_ARN != ''
     # Requires a reviewer approval configured on this environment:
     # Settings -> Environments -> aws-dev -> Required reviewers.
     environment: aws-dev
