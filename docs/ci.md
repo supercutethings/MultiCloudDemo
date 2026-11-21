@@ -16,6 +16,9 @@ at all**: `terraform fmt -check` plus `init -backend=false` and `validate` in ev
 environment. That is why a fresh clone with no cloud account still has a meaningful red/green
 signal.
 
+The `contract` job beside it is equally credential-free: it runs `terraform test` against
+mocked providers and asserts the module contract ([Contract tests](#contract-tests)).
+
 ## Why OIDC and not a secret
 
 A stored cloud key is a long-lived credential that works from anywhere until somebody

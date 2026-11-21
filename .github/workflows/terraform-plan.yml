@@ -47,6 +47,28 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Also credential-free: the providers are mocked, so this asserts the contract in
+  # infra/contracts/README.md without an account. It is the job that keeps that table from
+  # drifting away from the modules -- and the one that catches provider schema mistakes
+  # that `validate` happily accepts.
+  contract:
+    name: contract tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform test
+        run: |
+          terraform init -backend=false -input=false
+          terraform test -no-color
+
   plan-aws:
     name: plan (aws/dev)
     needs: validate
