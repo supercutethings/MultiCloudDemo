@@ -40,7 +40,8 @@ jobs:
         run: |-
           set -euo pipefail
           for dir in infra/modules/aws/* infra/modules/azure/* infra/modules/gcp/* \
-                     infra/envs/aws/dev infra/envs/azure/* infra/envs/gcp/* infra/bootstrap/aws; do
+                     infra/envs/aws/dev infra/envs/azure/* infra/envs/gcp/* \
+                     infra/bootstrap/aws infra/bootstrap/gcp; do
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
             terraform -chdir="$dir" validate
@@ -188,4 +189,69 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: '### Terraform plan (`azure/dev`)\n\n<details><summary>Show plan</summary>\n\n```terraform\n' + plan + '\n```\n\n</details>',
+            });
+
+  # The third authentication shape: no role to assume (AWS) and no app registration to log
+  # into (Azure). A Workload Identity Federation pool exchanges the GitHub OIDC token for a
+  # federated credential, which then impersonates a service account. `google-github-actions/auth`
+  # writes an external_account JSON file and exports GOOGLE_APPLICATION_CREDENTIALS, which the
+  # google provider picks up on its own -- so, again, no credential is configured in Terraform.
+  #
+  # The pool, the provider and the service account come from infra/bootstrap/gcp.
+  plan-gcp:
+    name: plan (gcp/cloudrun)
+    needs: validate
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/gcp/cloudrun
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.GCP_TF_STATE_BUCKET }}"
+
+      # The environment root has no project default on purpose: one plan must not silently
+      # target whichever project the credentials happen to belong to.
+      - name: Plan
+        run: |
+          terraform plan -input=false -lock-timeout=5m \
+            -var="project=${{ vars.GCP_PROJECT_ID }}" \
+            -var="image_tag=${{ github.sha }}" \
+            -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+          terraform show -json tfplan > plan.json
+
+      - name: Policy check
+        run: |-
+          set -euo pipefail
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" conftest
+          "$RUNNER_TEMP/conftest" test plan.json -p ../../../../platform/policies
+
+      - name: Comment the plan on the pull request
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |-
+            const fs = require('fs');
+            const file = 'infra/envs/gcp/cloudrun/plan.txt';
+            const plan = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').slice(0, 60000) : 'Plan was not produced. Check the workflow logs.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### Terraform plan (`gcp/cloudrun`)\n\n<details><summary>Show plan</summary>\n\n```terraform\n' + plan + '\n```\n\n</details>',
             });

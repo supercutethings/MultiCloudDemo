@@ -2,9 +2,8 @@
 
 Status: **all four serverless legs and all three Kubernetes legs are implemented.** The
 serverless legs are ECS (AWS), Container Apps (Azure) and Cloud Run (GCP); the Kubernetes
-legs are EKS, AKS and GKE. Nothing here claims to work before it does, and the two rows that
-are still not wired -- GCP CI authentication and GCS remote state in CI -- are marked 🚧
-even though the Terraform for them exists.
+legs are EKS, AKS and GKE. Nothing here claims to work before it does: a row is ✅ when the
+code exists *and* something runs it, and anything less is marked 🚧 or ⚠️.
 
 | Capability | AWS | Azure | GCP |
 |---|---|---|---|
@@ -18,8 +17,8 @@ even though the Terraform for them exists.
 | Workload identity | ✅ One IAM role per service | ✅ One user-assigned identity per app | ✅ One service account per service |
 | Registry | ✅ ECR, immutable tags | ✅ ACR, admin account disabled | ✅ Artifact Registry, cleanup policy, no `latest` |
 | Logs | ✅ CloudWatch, JSON + request id | ✅ Log Analytics | ✅ Cloud Logging (structured stdout) |
-| CI authentication | ✅ GitHub OIDC → IAM role | ✅ GitHub OIDC → Entra ID federated credential | 🚧 Workload Identity Federation (env exists, no CI job yet) |
-| State | ✅ S3 + DynamoDB lock | ✅ Blob + lease (`backend.example.hcl`) | 🚧 GCS bucket (backend configured, not wired into CI) |
+| CI authentication | ✅ GitHub OIDC → IAM role | ✅ GitHub OIDC → Entra ID federated credential | ✅ Workload Identity Federation → service account (`infra/bootstrap/gcp`) |
+| State | ✅ S3 + DynamoDB lock | ✅ Blob + lease (`backend.example.hcl`) | ✅ GCS bucket, prefix `gcp/cloudrun/dev` (no backend lock in Terraform 1.9) |
 | Internal transport | ✅ Application-level mTLS on 8443 | ⚠️ HTTP inside the environment (ingress terminates TLS) | ⚠️ HTTP inside the VPC (Cloud Run terminates TLS) |
 | Approx. monthly cost | ≈ $95 (or $0.26 for 2 h) | ≈ $0–68 (≈ $0 idle) | ≈ $13–32 (≈ $13 without the LB) |
 

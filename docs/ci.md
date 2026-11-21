@@ -86,13 +86,47 @@ provider-level credentials are configured anywhere in the Terraform.
 State locking is a blob lease: the `azurerm` backend locks the state blob for the duration of
 the run, which is why Azure needs no equivalent of the DynamoDB table.
 
+## GCP
+
+`infra/bootstrap/gcp` creates the state bucket, the Workload Identity Federation pool and
+its GitHub provider, and the service account the workflows impersonate. It prints exactly
+the values the jobs read:
+
+```
+GCP_PROJECT_ID                   project id (not the display name)
+GCP_REGION                       europe-west1
+GCP_TF_STATE_BUCKET              <project>-tfstate-<project-number>
+GCP_WORKLOAD_IDENTITY_PROVIDER   projects/<number>/locations/global/workloadIdentityPools/.../providers/github-actions
+GCP_SERVICE_ACCOUNT              <project>-github-actions@<project>.iam.gserviceaccount.com
+```
+
+Three details that cost time if you meet them for the first time:
+
+* **The attribute condition is the security boundary.** `assertion.repository == "ORG/REPO"`
+  is what stops every other GitHub repository on the internet from using the pool; without
+  it the pool is world-writable and the `principalSet` binding becomes irrelevant. The AWS
+  trust policy does the same job with a `sub` condition.
+* **`roles/iam.serviceAccountUser` is required**, and it is not implied by
+  `serviceAccountAdmin`. The apply creates Cloud Run revisions that *run as* the per-service
+  accounts; without this role the handshake succeeds and the revision creation fails with a
+  permission error that names neither role.
+* **`iamcredentials.googleapis.com` must be enabled.** The federation exchange itself uses
+  `sts.googleapis.com`, but impersonating the service account afterwards is a separate API.
+  The bootstrap stack enables both, so this is a note for a project set up by hand.
+
+State locking: the `gcs` backend in Terraform 1.9 does not lock, so there is no GCS
+counterpart to the DynamoDB table or the blob lease. Concurrency is prevented by the
+workflow's `concurrency: tf-apply` group, which is weaker than a real lock and is documented
+here rather than assumed away.
+
 ## Gating
 
-Both cloud jobs are gated on their variables existing:
+All three cloud jobs are gated on their variables existing:
 
 ```yaml
 if: vars.AWS_ROLE_ARN != ''
 if: vars.AZURE_CLIENT_ID != ''
+if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
 ```
 
 A repository with neither set runs only `validate`, and the workflows stay green while
@@ -105,8 +139,9 @@ Both apply jobs are two-phase for the same reason: an image has to exist before 
 that references it can start.
 
 ```
-apply -target=module.ecr      →  build and push images  →  apply -var image_tag=<sha>  →  smoke
-apply -target=module.acr      →  build and push images  →  apply -var image_tag=<sha>  →  smoke
+apply -target=module.ecr       →  build and push images  →  apply -var image_tag=<sha>  →  smoke
+apply -target=module.acr       →  build and push images  →  apply -var image_tag=<sha>  →  smoke
+apply -target=module.registry  →  build and push images  →  apply -var image_tag=<sha>  →  smoke
 ```
 
 `image_tag` is the commit SHA, never `latest`, so the deployed revision is traceable to a
@@ -138,8 +173,8 @@ is exactly the class of mistake that otherwise surfaces twenty minutes into a de
 | 1 | the plan failed | fails the job — an error is not drift |
 
 One issue per environment, updated in place and closed automatically once the plan is empty
-again. GCP has no job yet because it has no Workload Identity Federation pool, and a job
-that can only ever be skipped is noise.
+again. The workflow covers AWS and Azure; GCP gained plan and apply jobs first, and its drift
+job is the next one to add now that the federation pool exists.
 
 ## Ephemeral environment
 

@@ -150,3 +150,68 @@ jobs:
           URL=$(terraform -chdir=infra/envs/azure/dev output -raw url)
           echo "smoke testing $URL"
           bash scripts/smoke.sh "$URL"
+
+  # GCP, third authentication shape again: a Workload Identity Federation pool exchanges the
+  # GitHub OIDC token for a federated credential that impersonates a service account. There is
+  # no key file to leak and nothing to rotate.
+  #
+  # The pool, the provider and the service account come from infra/bootstrap/gcp. The region
+  # and project are passed as -var because the environment root has no defaults for them.
+  apply-gcp:
+    name: apply (gcp/cloudrun)
+    runs-on: ubuntu-latest
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    # Settings -> Environments -> gcp-cloudrun -> Required reviewers.
+    environment: gcp-cloudrun
+    defaults:
+      run:
+        working-directory: infra/envs/gcp/cloudrun
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.GCP_TF_STATE_BUCKET }}"
+
+      # Registry first, for the same reason ECR and ACR are first: a Cloud Run revision that
+      # references an image which does not exist yet crash-loops instead of deploying.
+      - name: Create the registry
+        run: |
+          terraform apply -input=false -auto-approve -target=module.registry \
+            -var="project=${{ vars.GCP_PROJECT_ID }}"
+
+      - name: Push the commit's images
+        run: |
+          set -euo pipefail
+          PREFIX=$(terraform output -raw image_repository_prefix)
+          # Artifact Registry authenticates against the regional host, not the full path.
+          gcloud auth configure-docker "${PREFIX%%/*}" --quiet
+
+          for service in auth catalog gateway; do
+            docker build -f "$GITHUB_WORKSPACE/apps/${service}/Dockerfile" \
+              -t "${PREFIX}/${service}:${IMAGE_TAG}" "$GITHUB_WORKSPACE"
+            docker push "${PREFIX}/${service}:${IMAGE_TAG}"
+          done
+
+      - name: Apply
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var="project=${{ vars.GCP_PROJECT_ID }}" \
+            -var="image_tag=${IMAGE_TAG}"
+
+      - name: Smoke test through the Cloud Run URL
+        working-directory: .
+        run: |
+          URL=$(terraform -chdir=infra/envs/gcp/cloudrun output -raw url)
+          echo "smoke testing $URL"
+          bash scripts/smoke.sh "$URL"
