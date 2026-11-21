@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+
+region      = "eu-west-1"
+project     = "showcase"
+environment = "dev"
+
+# Cheapest sensible demo: one replica per service, single-AZ database.
+desired_count = 1
+
+# Flip to false to save ~$34/month, but private tasks then cannot pull images
+# from ECR. See docs/cost.md for the trade-off.
+enable_nat_gateway = true
+
+# Optional: enables HTTPS on the ALB. Needs a validated ACM certificate in this region.
+# certificate_arn = "arn:aws:acm:eu-west-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
