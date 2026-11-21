@@ -1,0 +1,32 @@
+[project]
+name = "multicloud-showcase-apps"
+version = "1.0.0"
+description = "Reference microservices deployed to AWS, Azure and GCP by the IaC in this repository."
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["apps"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["common", "authsvc", "catalogsvc", "gateway"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency injection is a call in a default argument by design: the
+# framework inspects the signature at import time. This is the documented idiom,
+# not an accidental mutable/side-effecting default.
+"apps/*/*/main.py" = ["B008"]
+"apps/*/*/deps.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["apps/tests"]
+# `apps` makes `common` importable; the per-service roots make each service package
+# importable under its own name (authsvc, catalogsvc, gateway) without a sys.path hack.
+pythonpath = ["apps", "apps/auth", "apps/catalog", "apps/gateway"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

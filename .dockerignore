@@ -1,0 +1,15 @@
+.git
+.github
+**/.terraform
+**/__pycache__
+**/*.pyc
+.keys
+*.pem
+*.tfstate
+*.tfstate.backup
+.venv
+.pytest_cache
+.ruff_cache
+docs
+infra
+tests
