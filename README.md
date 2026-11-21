@@ -28,6 +28,7 @@ Client ──HTTPS──▶ Load balancer ──▶ gateway ──┬──▶ a
 - [Quick start](#quick-start-2-minutes)
 - [Deploy to AWS](#deploy-to-aws)
 - [Deploy to Azure](#deploy-to-azure-container-apps)
+- [Deploy to GCP](#deploy-to-gcp-cloud-run)
 - [Deploy to Kubernetes](#deploy-to-kubernetes-eks--aks--gke)
 - [Internal mutual TLS](#internal-mutual-tls)
 - [Security decisions](#security-decisions-worth-a-look)
@@ -47,7 +48,7 @@ Client ──HTTPS──▶ Load balancer ──▶ gateway ──┬──▶ a
 | AKS + App Gateway | Azure | ✅ cluster, node autoscaler, 3-AZ | `infra/envs/azure/aks`, `k8s/overlays/aks` |
 | GKE regional + GCLB | GCP | ✅ cluster, node autoscaler, 3-zone | `infra/envs/gcp/gke`, `k8s/overlays/gke` |
 | Container Apps | Azure | ✅ environment, identity per app, scale to zero | `infra/envs/azure/dev` |
-| Cloud Run | GCP | 🚧 Phase 3 — serverless leg | `infra/modules/gcp` (next) |
+| Cloud Run | GCP | ✅ services, private Cloud SQL, Secret Manager, scale to zero | `infra/envs/gcp/cloudrun` |
 
 Honest status beats a green badge. What exists runs; what does not is labelled.
 
@@ -162,6 +163,40 @@ forwards plaintext, so the internal hop is HTTP *inside* the environment instead
 application-level mTLS. The boundary still holds — only the gateway has external ingress —
 but the transport guarantee does not, and [docs/cloud-matrix.md](docs/cloud-matrix.md) says so.
 
+## Deploy to GCP (Cloud Run)
+
+```bash
+cd infra/envs/gcp/cloudrun
+cp backend.example.hcl backend.hcl          # point it at your GCS bucket
+terraform init -backend-config=backend.hcl
+terraform apply                             # VPC + connector, registry, Cloud SQL, secrets
+
+# A revision cannot start before its image exists, so push first.
+PREFIX=$(terraform output -raw image_repository_prefix)
+gcloud auth configure-docker "${PREFIX%%/*}"
+for service in auth catalog gateway; do
+  docker build -f "apps/$service/Dockerfile" -t "$PREFIX/$service:1.0.0" .
+  docker push "$PREFIX/$service:1.0.0"
+done
+
+terraform apply -var="image_tag=1.0.0"      # rolls the services onto the pushed images
+make smoke LOCAL_URL="$(terraform output -raw url)"
+```
+
+Cloud Run has no address inside the VPC, so every service sends egress through a
+**Serverless VPC Access connector** — that is what lets the gateway reach an internal-only
+service and what lets both services reach the private Cloud SQL address. Each service runs
+as its own service account: only `auth` can read the JWT private key, and only the gateway
+may invoke `auth` and `catalog`.
+
+The public entrypoint is the `*.run.app` URL with a Google-managed certificate. A global
+external HTTPS load balancer would add a stable IP and a custom domain for about $18/month,
+and the contract does not need either, so it is documented in [docs/cost.md](docs/cost.md)
+rather than deployed.
+
+The same transport gap as Azure applies: Cloud Run terminates TLS and forwards plaintext,
+so the internal hop is HTTP inside the VPC instead of application-level mTLS.
+
 ## Deploy to Kubernetes (EKS / AKS / GKE)
 
 Same images, same env vars, same smoke test. One provider-neutral base and three overlays;
@@ -235,7 +270,7 @@ infra/
   contracts/  the provider-neutral interface every cloud module must satisfy
   bootstrap/  per-cloud state backend and CI trust (applied once, by a human)
   modules/    reusable provider modules (network, ecr, rds, service, alb, pki, eks)
-  envs/       environments composed from modules (aws/dev, aws/eks, azure/aks, azure/dev, gcp/gke)
+  envs/       environments composed from modules (aws/dev, aws/eks, azure/dev, azure/aks, gcp/cloudrun, gcp/gke)
 platform/
   policies/   Conftest rules the plan and the manifests must pass before they can apply
 scripts/      local PKI, smoke test, mTLS checks, load test, renderer, add-ons
@@ -244,8 +279,10 @@ docs/         ADRs, cloud matrix, cost model, Kubernetes runbook
 
 ## Security decisions worth a look
 
-* **No static cloud credentials.** GitHub Actions assumes a role via OIDC, pinned to this
-  repository's `pull_request`, `main` and `environment:*` subjects — [ADR 0002](docs/adr/0002-oidc-no-static-credentials.md).
+* **No static cloud credentials.** GitHub Actions assumes an AWS role, or exchanges a GitHub
+  OIDC token for an Entra ID token, pinned to this repository's `pull_request`, `main` and
+  `environment:*` subjects — [ADR 0002](docs/adr/0002-oidc-no-static-credentials.md) ·
+  [docs/ci.md](docs/ci.md).
 * **Only one public service.** The ALB has one target group; `auth` and `catalog` accept
   traffic only from the gateway's security group, and each verifies the JWT anyway.
 * **Mutual TLS behind the edge.** Transport identity is verified in the handshake, before
@@ -283,12 +320,28 @@ deployable state of the platform, and the changelog records what changed and why
 
 | Version | Milestone | Highlights |
 |---|---|---|
+| **v0.5.0** | GCP serverless leg + Azure CI | Cloud Run behind a Serverless VPC connector, private Cloud SQL, Secret Manager per secret, one service account per service; Azure plan/apply in CI with OIDC federated credentials |
 | **v0.4.0** | Azure serverless leg | Container Apps injected into a VNet, one managed identity per app, Flexible Server with no public endpoint, Key Vault behind a private endpoint, ACR with the admin account disabled, scale to zero when idle |
 | **v0.3.0** | Internal PKI and mutual TLS | Two trust domains, app-level mTLS on 8443, cert-manager issuance and rotation, Reloader rollout, expiry alerts at 21/7 days, policy rules for `Certificate` hygiene |
 | **v0.2.0** | Kubernetes runtime | EKS, AKS and GKE from one base, three-AZ node pools, HPA + node autoscaling, PDBs, default-deny NetworkPolicies, federated secret access, renderer that refuses incomplete overlays |
 | **v0.1.0** | AWS serverless leg | FastAPI services, local Compose stack, network/ECR/RDS/ECS/ALB modules, Cloud Map, OIDC CI, Conftest guardrails |
 
 ### Changelog
+
+**v0.5.0 — GCP serverless leg and Azure CI**
+
+* Added `infra/modules/gcp/{network,artifact_registry,cloud_sql,secret_manager,cloud_run}`:
+  a VPC with a Serverless VPC Access connector, a registry with a cleanup policy, Cloud SQL
+  with a private IP only, Secret Manager with per-service accessors, and the services
+  themselves with internal ingress for everything except the gateway.
+* Added `infra/envs/gcp/cloudrun`: three services, one service account each, secrets
+  resolved by `secret_key_ref`, gateway upstream URLs read from the real service URIs.
+* Two new Conftest rules: no public IP on Cloud SQL, and no Cloud Run service other than
+  the gateway accepting internet traffic.
+* Added Azure `plan` and `apply` jobs with OIDC federated credentials, plus
+  `scripts/azure-oidc-bootstrap.sh` for the one-time app registration and state account.
+* Added [docs/ci.md](docs/ci.md): the OIDC subjects, the repository variables per cloud,
+  and the two-phase apply that makes an image exist before the workload that needs it.
 
 **v0.4.0 — Azure serverless leg**
 
@@ -339,7 +392,6 @@ deployable state of the platform, and the changelog records what changed and why
 
 ### Unreleased
 
-* Phase 3 — GCP Cloud Run leg.
 * Phase 4 — `terraform test` for the contract, drift detection, k6 through the load
   balancer, JWT key-rotation runbook.
 
@@ -350,7 +402,8 @@ deployable state of the platform, and the changelog records what changed and why
   autoscaling, PDBs, default-deny NetworkPolicies, federated secret access, load test.
 * **Phase 2 — Azure serverless (done):** Container Apps + Flexible Server + Key Vault + ACR,
   VNet-injected, one managed identity per app, scale to zero when idle.
-* **Phase 3 — GCP serverless:** Cloud Run + Cloud SQL + Secret Manager; matrix filled in.
+* **Phase 3 — GCP serverless (done):** Cloud Run + Cloud SQL + Secret Manager behind a VPC
+  connector, one service account per service, and Azure plan/apply in CI with OIDC.
 * **Phase 4 — Hardening:** `terraform test` for the contract, ephemeral-environment apply in CI,
   drift detection, k6 load test through the LB, JWT key rotation runbook.
 * **Phase 5 — Packaging:** recorded demo, per-cloud cost screenshots, "what I would change at
@@ -370,7 +423,7 @@ is deliberately small enough that a first pull request does not require reading 
 | Tests | Cover the auth error paths, add a Compose-level smoke variant | `apps/tests/` |
 | Policies | New Conftest rule with a failing and a passing fixture | `platform/policies/` |
 | Kubernetes | Add a `kustomize` component for a second internal service | `k8s/components/` |
-| Phase 2 / 3 | Container Apps or Cloud Run module that satisfies `infra/contracts` | `infra/modules/` |
+| Phase 4 | `terraform test` coverage for the contract, or a new k6 scenario | `tests/`, `scripts/` |
 
 ### Development setup
 
@@ -419,8 +472,8 @@ Terraform changes additionally need Terraform ≥ 1.6 (`terraform fmt -check -re
 
 Every pull request runs the app pipeline (ruff, pytest, image build and Trivy scan),
 manifest validation (`kustomize` render, `kubeconform -strict`, `conftest`) and
-`terraform fmt`/`validate`. A plan is posted as a comment when AWS credentials are
-available. Merges require a green run; nothing is merged on a red badge.
+`terraform fmt`/`validate`. A plan is posted as a comment when cloud credentials are
+available — an AWS role or an Azure federated credential ([docs/ci.md](docs/ci.md)). Merges require a green run; nothing is merged on a red badge.
 
 ### Community
 

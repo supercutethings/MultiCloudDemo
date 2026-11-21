@@ -15,7 +15,7 @@ permissions:
 
 # Never run two applies against the same state at once.
 concurrency:
-  group: tf-apply-aws-dev
+  group: tf-apply
   cancel-in-progress: false
 
 env:
@@ -24,7 +24,7 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  apply:
+  apply-aws:
     name: apply (aws/dev)
     runs-on: ubuntu-latest
     # A fresh clone has no AWS account wired up. Without this guard the job fails
@@ -82,5 +82,71 @@ jobs:
         working-directory: .
         run: |
           URL=$(terraform -chdir=infra/envs/aws/dev output -raw url)
+          echo "smoke testing $URL"
+          bash scripts/smoke.sh "$URL"
+
+  # The Azure mirror of the job above, including the same two-phase apply: registry first,
+  # then the images, then the apps that reference them.
+  #
+  # `az acr login --expose-token` avoids the Docker credential helper: the CI runner gets a
+  # short-lived token for one registry and nothing is written to ~/.docker/config.json that
+  # outlives the job.
+  apply-azure:
+    name: apply (azure/dev)
+    runs-on: ubuntu-latest
+    if: vars.AZURE_CLIENT_ID != ''
+    # Settings -> Environments -> azure-dev -> Required reviewers.
+    environment: azure-dev
+    defaults:
+      run:
+        working-directory: infra/envs/azure/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.AZURE_TFSTATE_CONTAINER }}"
+
+      # The registry has to exist before an image can be pushed, and the app revisions have
+      # to find their image already there -- otherwise the first revision crash-loops.
+      - name: Create the registry
+        run: terraform apply -input=false -auto-approve -target=module.acr
+
+      - name: Push the commit's images
+        run: |
+          set -euo pipefail
+          REGISTRY=$(terraform output -raw acr_login_server)
+          TOKEN=$(az acr login --name "${REGISTRY%%.*}" --expose-token \
+            --output tsv --query accessToken)
+          echo "$TOKEN" | docker login "$REGISTRY" \
+            --username 00000000-0000-0000-0000-000000000000 --password-stdin
+
+          for service in auth catalog gateway; do
+            docker build -f "$GITHUB_WORKSPACE/apps/${service}/Dockerfile" \
+              -t "${REGISTRY}/${service}:${IMAGE_TAG}" "$GITHUB_WORKSPACE"
+            docker push "${REGISTRY}/${service}:${IMAGE_TAG}"
+          done
+
+      - name: Apply
+        run: terraform apply -input=false -auto-approve -var="image_tag=${IMAGE_TAG}"
+
+      - name: Smoke test through the Container Apps ingress
+        working-directory: .
+        run: |
+          URL=$(terraform -chdir=infra/envs/azure/dev output -raw url)
           echo "smoke testing $URL"
           bash scripts/smoke.sh "$URL"

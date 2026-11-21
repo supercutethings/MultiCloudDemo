@@ -1,26 +1,27 @@
 # Cloud matrix
 
-Status: the **AWS serverless leg** (ECS), the **Azure serverless leg** (Container Apps) and
-**all three Kubernetes legs** (EKS, AKS, GKE) are implemented. Cloud Run is the remaining
-serverless leg; its rows are design intent, marked 🚧, and are updated as the module lands.
-Nothing here claims to work before it does.
+Status: **all four serverless legs and all three Kubernetes legs are implemented.** The
+serverless legs are ECS (AWS), Container Apps (Azure) and Cloud Run (GCP); the Kubernetes
+legs are EKS, AKS and GKE. Nothing here claims to work before it does, and the two rows that
+are still not wired -- GCP CI authentication and GCS remote state in CI -- are marked 🚧
+even though the Terraform for them exists.
 
-| Capability | AWS | Azure | GCP (planned) |
+| Capability | AWS | Azure | GCP |
 |---|---|---|---|
-| Public entrypoint | ✅ ALB, single target group | ✅ Container Apps ingress | 🚧 Global external HTTPS LB |
-| TLS termination | ✅ HTTPS listener + ACM (optional in dev) | ✅ Platform-managed certificate on the environment domain | 🚧 Google-managed certificate |
-| Compute | ✅ ECS Fargate | ✅ Container Apps (consumption) | 🚧 Cloud Run |
-| Replica scaling | ✅ Target tracking on CPU | ✅ HTTP + CPU rules, 0 → 10 | 🚧 Concurrency-based autoscaling |
-| Service discovery | ✅ Cloud Map private DNS | ✅ Internal ingress FQDN | 🚧 Internal Cloud Run URL |
-| Database | ✅ RDS PostgreSQL, private | ✅ Flexible Server, delegated subnet, no public endpoint | 🚧 Cloud SQL, private IP |
-| Secrets | ✅ Secrets Manager | ✅ Key Vault, one secret per value, RBAC | 🚧 Secret Manager |
-| Workload identity | ✅ One IAM role per service | ✅ One user-assigned identity per app | 🚧 Runtime service account per service |
-| Registry | ✅ ECR, immutable tags | ✅ ACR, admin account disabled | 🚧 Artifact Registry |
-| Logs | ✅ CloudWatch, JSON + request id | ✅ Log Analytics | 🚧 Cloud Logging |
-| CI authentication | ✅ GitHub OIDC → IAM role | 🚧 Federated credential (not wired yet) | 🚧 Workload Identity Federation |
-| State | ✅ S3 + DynamoDB lock | 🚧 Blob + lease (`backend.example.hcl`) | 🚧 GCS |
-| Internal transport | ✅ Application-level mTLS on 8443 | ⚠️ HTTP inside the environment (ingress terminates TLS) | 🚧 TBD |
-| Approx. monthly cost | ≈ $95 (or $0.26 for 2 h) | ≈ $0–68 (≈ $0 idle) | ≈ $13–32 |
+| Public entrypoint | ✅ ALB, single target group | ✅ Container Apps ingress | ✅ Cloud Run URL (no LB) |
+| TLS termination | ✅ HTTPS listener + ACM (optional in dev) | ✅ Platform-managed certificate on the environment domain | ✅ Google-managed certificate on `*.run.app` |
+| Compute | ✅ ECS Fargate | ✅ Container Apps (consumption) | ✅ Cloud Run (gen2) |
+| Replica scaling | ✅ Target tracking on CPU | ✅ HTTP + CPU rules, 0 → 10 | ✅ Concurrency + request-based, 0 → 10 |
+| Service discovery | ✅ Cloud Map private DNS | ✅ Internal ingress FQDN | ✅ Internal-only service URI via VPC connector |
+| Database | ✅ RDS PostgreSQL, private | ✅ Flexible Server, delegated subnet, no public endpoint | ✅ Cloud SQL, private IP via VPC peering, no public IP |
+| Secrets | ✅ Secrets Manager | ✅ Key Vault, one secret per value, RBAC | ✅ Secret Manager, one secret per value, per-service accessor |
+| Workload identity | ✅ One IAM role per service | ✅ One user-assigned identity per app | ✅ One service account per service |
+| Registry | ✅ ECR, immutable tags | ✅ ACR, admin account disabled | ✅ Artifact Registry, cleanup policy, no `latest` |
+| Logs | ✅ CloudWatch, JSON + request id | ✅ Log Analytics | ✅ Cloud Logging (structured stdout) |
+| CI authentication | ✅ GitHub OIDC → IAM role | ✅ GitHub OIDC → Entra ID federated credential | 🚧 Workload Identity Federation (env exists, no CI job yet) |
+| State | ✅ S3 + DynamoDB lock | ✅ Blob + lease (`backend.example.hcl`) | 🚧 GCS bucket (backend configured, not wired into CI) |
+| Internal transport | ✅ Application-level mTLS on 8443 | ⚠️ HTTP inside the environment (ingress terminates TLS) | ⚠️ HTTP inside the VPC (Cloud Run terminates TLS) |
+| Approx. monthly cost | ≈ $95 (or $0.26 for 2 h) | ≈ $0–68 (≈ $0 idle) | ≈ $13–32 (≈ $13 without the LB) |
 
 ## Kubernetes runtime (EKS / AKS / GKE)
 
@@ -84,6 +85,30 @@ README of a senior portfolio, not hidden in commit messages.
   papered over.
 * A delegated subnet belongs to the service it is delegated to. The database and the app
   environment therefore cannot share one, which is why the VNet has three.
+* The CI service principal needs **Contributor and User Access Administrator**: the modules
+  create role assignments, and Contributor alone fails on the first one.
+
+**GCP**
+
+* Cloud Run has no address inside the VPC. Every call to the private database or to an
+  internal-only service goes through a Serverless VPC Access connector — one extra resource,
+  one extra network hop, and the step most "Cloud Run + Cloud SQL" tutorials skip. The
+  connector is free; the egress is not.
+* `INGRESS_TRAFFIC_INTERNAL_ONLY` means "from the VPC or from a Google load balancer", not
+  "from anywhere in the project". It is enforced at the front end, before IAM: a public
+  request gets a 404, not a 403, which is a confusing thing to debug if you expect IAM.
+* `vpc_access.egress` defaults to `PRIVATE_RANGES_ONLY`, which does **not** cover Cloud SQL's
+  private address. Both services set `ALL_TRAFFIC` for that reason.
+* Cloud Run terminates TLS and forwards plaintext, exactly like Container Apps, so the
+  internal hop here is HTTP inside the VPC rather than application-level mTLS. Same gap,
+  same place in the table.
+* Cloud SQL's private IP comes from a peering range allocated by
+  `google_service_networking_connection`. Re-creating it after a partial destroy fails with
+  "connection already exists" — the fix is to delete the peering, not to re-apply.
+* Revision-based deploys mean there is no task definition to inspect; "what is running" is
+  `gcloud run revisions list`, not `aws ecs describe-task-definition`.
+* The global HTTPS load balancer is a separate paid product (~$18/month) and is not required
+  for Cloud Run to work. It is not deployed here; `docs/cost.md` documents the trade.
 
 **Kubernetes specifics**
 
@@ -97,14 +122,3 @@ README of a senior portfolio, not hidden in commit messages.
   secrets. Same Kubernetes Secret keys either way, so the Deployments never change.
 * EKS is the only one of the three where the control plane is a line item you can see
   growing when you leave a cluster up.
-
-**GCP (expected)**
-
-* Cloud Run reaches a private Cloud SQL instance through a Serverless VPC connector — one
-  extra resource, one extra network hop, and a per-connector hourly cost. This is the
-  step that most "Cloud Run + Cloud SQL" tutorials skip.
-* The global HTTPS load balancer is a separate paid product (~$18/month) and is not
-  required for Cloud Run to work. It is only there to keep the contract identical to the
-  other two clouds; `docs/cost.md` documents dropping it.
-* Revision-based deploys mean there is no task definition to inspect; "what is running"
-  is `gcloud run revisions list`, not `aws ecs describe-task-definition`.

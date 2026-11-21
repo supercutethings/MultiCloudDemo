@@ -78,3 +78,29 @@ deny[msg] {
 
   msg := sprintf("%s: ACR admin account must stay disabled; use a managed identity", [resource.address])
 }
+
+# 7. The GCP database must keep its private address only.
+deny[msg] {
+  resource := input.resource_changes[_]
+  action := resource.change.actions[_]
+  action != "delete"
+  resource.type == "google_sql_database_instance"
+
+  ip := resource.change.after.settings[_].ip_configuration[_]
+  ip.ipv4_enabled
+
+  msg := sprintf("%s: Cloud SQL must not enable a public IP", [resource.address])
+}
+
+# 8. Only the gateway may accept traffic from the internet.
+deny[msg] {
+  resource := input.resource_changes[_]
+  action := resource.change.actions[_]
+  action != "delete"
+  resource.type == "google_cloud_run_v2_service"
+
+  resource.change.after.ingress == "INGRESS_TRAFFIC_ALL"
+  not endswith(resource.change.after.name, "gateway")
+
+  msg := sprintf("%s: only the gateway may accept traffic from the internet", [resource.address])
+}

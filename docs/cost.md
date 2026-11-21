@@ -100,11 +100,12 @@ Azure is the only one of the three where the *whole* stack can sit inside free-t
 for a year: Container Apps scales to zero when nobody calls it, the ingress and managed
 certificate are free, and a new subscription includes 750 hours of B1ms PostgreSQL.
 
-## GCP (Phase 3)
+## GCP (implemented)
 
 | Component | Size | ≈ $/month | Free tier | Cheaper alternative |
 |---|---|---|---|---|
 | Cloud Run | 3 services, scale to zero | ≈ 0 idle | 2M requests + 180k vCPU-s per month | already the cheap option |
+| Serverless VPC Access connector | 2–3 instances | 0.00 | none | required: without it Cloud Run cannot reach the private database |
 | Cloud SQL PostgreSQL | `db-f1-micro`, 10 GiB SSD | ≈ 13.00 | none (credit only) | none — the database is the floor |
 | Global external HTTPS LB | 1 forwarding rule | ≈ 18.00 | none | **use the `*.run.app` URL → $0** (loses the LB demo) |
 | Artifact Registry | < 1 GiB | 0.10 | 500 MiB | — |
@@ -112,7 +113,14 @@ certificate are free, and a new subscription includes 750 hours of B1ms PostgreS
 | **Total** | | **≈ $32 with LB / ≈ $13 without** | 90-day $300 credit | **≈ $13** |
 
 Cloud Run's free tier is generous but it expires with the credit for the *database*, which
-bills every hour regardless of traffic.
+bills every hour regardless of traffic. The VPC connector that makes the private database
+reachable is not a line item: connectors are free, egress through them is not.
+
+The load balancer is the one deliberate omission. `infra/envs/gcp/cloudrun` deploys the
+gateway with `INGRESS_TRAFFIC_ALL`, so it gets a Google-managed certificate on `*.run.app`
+and the contract's "public entrypoint" row is satisfied for $0. The global HTTPS LB adds a
+stable IP, a custom domain and a CDN policy — none of which the contract needs — for about
+$18/month.
 
 ## Alternatives, ranked by what they actually teach you
 

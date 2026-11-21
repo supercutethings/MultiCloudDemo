@@ -6,10 +6,11 @@ on:
       - "infra/**"
       - "platform/**"
       - ".github/workflows/terraform-plan.yml"
+  workflow_dispatch: # manual run; the only way to plan outside a pull request
 
 permissions:
   contents: read
-  id-token: write # OIDC: no static AWS credentials anywhere in the repository
+  id-token: write # OIDC: no static cloud credentials anywhere in the repository
   pull-requests: write
 
 concurrency:
@@ -36,17 +37,17 @@ jobs:
         run: terraform fmt -check -recursive infra platform
 
       - name: Validate modules
-        run: |
+        run: |-
           set -euo pipefail
-          for dir in infra/modules/aws/* infra/modules/azure/* infra/envs/aws/dev \
-                     infra/envs/azure/* infra/bootstrap/aws; do
+          for dir in infra/modules/aws/* infra/modules/azure/* infra/modules/gcp/* \
+                     infra/envs/aws/dev infra/envs/azure/* infra/envs/gcp/* infra/bootstrap/aws; do
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
             terraform -chdir="$dir" validate
             echo "::endgroup::"
           done
 
-  plan:
+  plan-aws:
     name: plan (aws/dev)
     needs: validate
     if: vars.AWS_ROLE_ARN != ''
@@ -82,17 +83,17 @@ jobs:
           terraform show -json tfplan > plan.json
 
       - name: Policy check
-        run: |
+        run: |-
           set -euo pipefail
           curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz \
             | tar -xz -C "$RUNNER_TEMP" conftest
           "$RUNNER_TEMP/conftest" test plan.json -p ../../../../platform/policies
 
       - name: Comment the plan on the pull request
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
-          script: |
+          script: |-
             const fs = require('fs');
             const file = 'infra/envs/aws/dev/plan.txt';
             const plan = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').slice(0, 60000) : 'Plan was not produced. Check the workflow logs.';
@@ -101,4 +102,68 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: '### Terraform plan (`aws/dev`)\n\n<details><summary>Show plan</summary>\n\n```terraform\n' + plan + '\n```\n\n</details>',
+            });
+
+  # Same shape as the AWS job. The difference is the login step: `azure/login` exchanges the
+  # GitHub OIDC token for an Entra ID token, and the azurerm provider then picks up the
+  # resulting CLI session. No client secret, no certificate, nothing to rotate.
+  #
+  # The service principal needs Contributor *and* User Access Administrator, because the
+  # modules create role assignments (AcrPull, Key Vault Secrets User) -- see
+  # scripts/azure-oidc-bootstrap.sh.
+  plan-azure:
+    name: plan (azure/dev)
+    needs: validate
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/azure/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.AZURE_TFSTATE_CONTAINER }}"
+
+      - name: Plan
+        run: |
+          terraform plan -input=false -lock-timeout=5m -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+          terraform show -json tfplan > plan.json
+
+      - name: Policy check
+        run: |-
+          set -euo pipefail
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" conftest
+          "$RUNNER_TEMP/conftest" test plan.json -p ../../../../platform/policies
+
+      - name: Comment the plan on the pull request
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |-
+            const fs = require('fs');
+            const file = 'infra/envs/azure/dev/plan.txt';
+            const plan = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').slice(0, 60000) : 'Plan was not produced. Check the workflow logs.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### Terraform plan (`azure/dev`)\n\n<details><summary>Show plan</summary>\n\n```terraform\n' + plan + '\n```\n\n</details>',
             });

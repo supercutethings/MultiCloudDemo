@@ -30,19 +30,29 @@ silently dropped.
 
 ## Provider mapping (implemented status)
 
-| Contract concept | AWS (implemented) | Azure (implemented) | GCP (planned) |
+| Contract concept | AWS | Azure | GCP |
 |---|---|---|---|
-| Public entrypoint | ALB + HTTPS listener | Container Apps ingress (platform TLS) | Global HTTPS LB |
-| Compute | ECS Fargate | Container Apps (consumption, scale to zero) | Cloud Run |
-| Service discovery | Cloud Map private DNS | Container Apps internal ingress FQDN | Cloud Run internal URL |
-| Database | RDS PostgreSQL | Flexible Server, delegated subnet | Cloud SQL |
-| Secrets | Secrets Manager | Key Vault (one secret per value, RBAC) | Secret Manager |
-| Registry | ECR (immutable tags) | ACR (admin account disabled) | Artifact Registry |
-| Workload identity | ECS task role | User-assigned managed identity per app | Runtime service account |
+| Public entrypoint | ALB + HTTPS listener | Container Apps ingress (platform TLS) | Cloud Run URL (`*.run.app`, managed TLS) |
+| Compute | ECS Fargate | Container Apps (consumption, scale to zero) | Cloud Run (gen2, scale to zero) |
+| Service discovery | Cloud Map private DNS | Container Apps internal ingress FQDN | Internal-only service URI through the VPC connector |
+| Database | RDS PostgreSQL | Flexible Server, delegated subnet | Cloud SQL, private IP via VPC peering |
+| Secrets | Secrets Manager | Key Vault (one secret per value, RBAC) | Secret Manager (one secret per value) |
+| Registry | ECR (immutable tags) | ACR (admin account disabled) | Artifact Registry (cleanup policy, no `latest`) |
+| Workload identity | ECS task role | User-assigned managed identity per app | Service account per service |
+| Logs | CloudWatch | Log Analytics | Cloud Logging |
 
-Azure fills every row, with one deliberate difference: Container Apps ingress terminates TLS
-and forwards plaintext to the container, so the internal hop is HTTP inside the environment
-instead of application-level mTLS. That gap is recorded in `docs/cloud-matrix.md`.
+All three implement the table. Two differences are deliberate and recorded rather than
+hidden:
+
+* **Transport behind the edge.** Container Apps and Cloud Run terminate TLS at the platform
+  and forward plaintext to the container, with no client-certificate passthrough. So the
+  gateway -> auth/catalog hop is HTTP *inside* the VNet/VPC on those two legs, not the
+  application-level mTLS that ECS and Kubernetes use. The boundary holds everywhere; the
+  transport guarantee does not.
+* **Public entrypoint.** AWS uses an ALB because ECS has no ingress of its own. Azure and
+  GCP use the platform ingress, which is free and terminates TLS. The global HTTPS load
+  balancer described in `docs/cloud-matrix.md` is an optional extra (~$18/month) that this
+  repository does not deploy, because it buys no capability the contract needs.
 
 The parity tests in `tests/terraform/` (Phase 4) assert that a module exposes every output
 above, so the contract cannot rot without a red build.

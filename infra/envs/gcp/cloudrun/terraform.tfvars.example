@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars (git-ignored) and set the project. Every other value has a
+# working default, so `terraform apply` with no tfvars is valid -- it just picks the
+# cheapest sizes.
+project     = "your-project-id"
+environment = "dev"
+region      = "europe-west1"
+
+# /28 for the Serverless VPC Access connector. Cloud Run has no route to the private
+# database without it.
+connector_cidr = "10.40.16.0/28"
+
+# db-f1-micro is the cheapest instance Cloud SQL will start.
+db_tier        = "db-f1-micro"
+db_disk_size_gb = 10
+db_ha          = false
+
+# Images must exist in Artifact Registry before a revision can start: build, push, apply.
+image_tag = "1.0.0"
+
+# 0 scales to zero (free when idle, cold start on the first request).
+service_min_instances = 0
+service_max_instances = 3
+
+# One warm gateway keeps the public URL responsive for the smoke test.
+gateway_min_instances = 1
+gateway_max_instances = 10
